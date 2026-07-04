@@ -1,10 +1,12 @@
 #include "plustimes.hpp"
 #include "../cfg/CFG.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -17,7 +19,7 @@ struct DenseBinaryRule {
 
 NodeId appendNode(PlusTimesProgram& program, PTNode node)
 {
-  if (program.nodes.size() >= EMPTY_NODE) {
+  if (program.nodes.size() > static_cast<std::size_t>(std::numeric_limits<NodeId>::max()) - 1) {
     throw std::overflow_error("too many plus-times nodes");
   }
 
@@ -49,9 +51,10 @@ NodeId makeAdd(PlusTimesProgram& program, const std::vector<NodeId>& rawChildren
   children.reserve(rawChildren.size());
 
   int degree = -1;
-  for (NodeId child : rawChildren) {
+
+  const auto addChild = [&](NodeId child) {
     if (child == EMPTY_NODE) {
-      continue;
+      return;
     }
 
     requireNode(program, child);
@@ -63,11 +66,31 @@ NodeId makeAdd(PlusTimesProgram& program, const std::vector<NodeId>& rawChildren
     }
 
     children.push_back(child);
+  };
+
+  for (NodeId child : rawChildren) {
+    if (child == EMPTY_NODE) {
+      continue;
+    }
+
+    requireNode(program, child);
+    const PTNode& node = program.nodes[child];
+    if (node.kind == PTKind::Add) {
+      for (NodeId grandchild : node.children) {
+        addChild(grandchild);
+      }
+    } else {
+      addChild(child);
+    }
   }
 
   if (children.empty()) {
     return EMPTY_NODE;
   }
+
+  std::sort(children.begin(), children.end());
+  children.erase(std::unique(children.begin(), children.end()), children.end());
+
   if (children.size() == 1) {
     return children.front();
   }
@@ -95,6 +118,34 @@ NodeId makeMult(PlusTimesProgram& program, NodeId left, NodeId right)
   node.children = {left, right};
 
   return appendNode(program, std::move(node));
+}
+
+void validateDisjointNonzeroIds(const CFG& cfg)
+{
+  std::unordered_set<uint32_t> nonterminals;
+  nonterminals.reserve(cfg.nonterminalIds.size());
+  for (uint32_t id : cfg.nonterminalIds) {
+    if (id == 0) {
+      throw std::invalid_argument("nonterminal id 0 is reserved");
+    }
+    if (!nonterminals.insert(id).second) {
+      throw std::invalid_argument("duplicate nonterminal id " + std::to_string(id));
+    }
+  }
+
+  std::unordered_set<uint32_t> terminals;
+  terminals.reserve(cfg.terminalIds.size());
+  for (uint32_t id : cfg.terminalIds) {
+    if (id == 0) {
+      throw std::invalid_argument("terminal id 0 is reserved");
+    }
+    if (nonterminals.find(id) != nonterminals.end()) {
+      throw std::invalid_argument("terminal/nonterminal id overlap at " + std::to_string(id));
+    }
+    if (!terminals.insert(id).second) {
+      throw std::invalid_argument("duplicate terminal id " + std::to_string(id));
+    }
+  }
 }
 
 std::unordered_map<uint32_t, std::size_t> makeDenseIndex(
@@ -140,9 +191,18 @@ std::size_t variableIndex(std::size_t terminal, int offset, std::size_t numTermi
   return static_cast<std::size_t>(offset) * numTerminals + terminal;
 }
 
+std::size_t checkedProduct(std::size_t left, std::size_t right, const char* message)
+{
+  if (right != 0 && left > std::numeric_limits<std::size_t>::max() / right) {
+    throw std::overflow_error(message);
+  }
+
+  return left * right;
+}
+
 } // namespace
 
-PlusTimesProgram compileCFGToPlusTimes(CFG &cfg, int n)
+PlusTimesProgram compileCFGToPlusTimes(const CFG& cfg, int n)
 {
   if (n < 0) {
     throw std::invalid_argument("n cannot be negative");
@@ -150,6 +210,8 @@ PlusTimesProgram compileCFGToPlusTimes(CFG &cfg, int n)
   if (n == 0) {
     throw std::runtime_error("length-zero CFG compilation needs constant nodes");
   }
+
+  validateDisjointNonzeroIds(cfg);
 
   const auto nonterminalIndex = makeDenseIndex(cfg.nonterminalIds, "nonterminal");
   const auto terminalIndex = makeDenseIndex(cfg.terminalIds, "terminal");
@@ -160,7 +222,10 @@ PlusTimesProgram compileCFGToPlusTimes(CFG &cfg, int n)
     throw std::invalid_argument("CFG must have at least one nonterminal");
   }
 
-  const std::size_t numVars = static_cast<std::size_t>(n) * numTerminals;
+  const std::size_t numVars = checkedProduct(
+    static_cast<std::size_t>(n),
+    numTerminals,
+    "too many plus-times variables");
   if (numVars > std::numeric_limits<PolyVarId>::max()) {
     throw std::overflow_error("too many plus-times variables");
   }
@@ -193,8 +258,9 @@ PlusTimesProgram compileCFGToPlusTimes(CFG &cfg, int n)
     }
   }
 
-  const std::size_t dpSize =
-    numNonterminals * (static_cast<std::size_t>(n) + 1) * (static_cast<std::size_t>(n) + 1);
+  const std::size_t side = static_cast<std::size_t>(n) + 1;
+  const std::size_t dpSide = checkedProduct(side, side, "DP table too large");
+  const std::size_t dpSize = checkedProduct(numNonterminals, dpSide, "DP table too large");
   std::vector<NodeId> dp(dpSize, EMPTY_NODE);
 
   for (std::size_t nonterminal = 0; nonterminal < numNonterminals; ++nonterminal) {
@@ -213,23 +279,25 @@ PlusTimesProgram compileCFGToPlusTimes(CFG &cfg, int n)
   for (int length = 2; length <= n; ++length) {
     for (int offset = 0; offset <= n - length; ++offset) {
       for (std::size_t nonterminal = 0; nonterminal < numNonterminals; ++nonterminal) {
-        std::vector<NodeId> ruleChildren;
-        ruleChildren.reserve(binaryRules[nonterminal].size());
+        std::vector<NodeId> alternatives;
+        alternatives.reserve(
+          checkedProduct(
+            binaryRules[nonterminal].size(),
+            static_cast<std::size_t>(length - 1),
+            "too many DP alternatives"));
 
         for (const DenseBinaryRule& rule : binaryRules[nonterminal]) {
-          std::vector<NodeId> splitChildren;
-          splitChildren.reserve(static_cast<std::size_t>(length - 1));
-
           for (int split = 1; split < length; ++split) {
             const NodeId left = dp[dpIndex(rule.left, split, offset, n)];
             const NodeId right = dp[dpIndex(rule.right, length - split, offset + split, n)];
-            splitChildren.push_back(makeMult(program, left, right));
+            const NodeId product = makeMult(program, left, right);
+            if (product != EMPTY_NODE) {
+              alternatives.push_back(product);
+            }
           }
-
-          ruleChildren.push_back(makeAdd(program, splitChildren));
         }
 
-        dp[dpIndex(nonterminal, length, offset, n)] = makeAdd(program, ruleChildren);
+        dp[dpIndex(nonterminal, length, offset, n)] = makeAdd(program, alternatives);
       }
     }
   }

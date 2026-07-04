@@ -1,5 +1,8 @@
 #include <stdint.h>
 #include <vector>
+
+struct CFG;
+
 using NodeId = uint32_t;
 using PolyVarId = uint32_t;
 
@@ -29,3 +32,5 @@ struct PlusTimesProgram {
     uint32_t numVars = 0;
     int degree = 0;
 };
+
+PlusTimesProgram compileCFGToPlusTimes(const CFG& cfg, int n);
