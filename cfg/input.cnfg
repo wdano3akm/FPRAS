@@ -9,6 +9,7 @@ c then num_rules lines where the first element is the lefthand-side of the rule 
 c using (non)terminals that have not been pre-specified should terminate the execution
 c all rule lines should terminate with a `0`
 c no (non)terminal can be named `0`
+c (non)terminals may only be named uint32 numbers 
 c the start symbol is the first declared nonterminal 
 c add a line `START 0` to the rules if the start symbol is nullable
-c (non)terminals may only be named uint32 numbers 
+c .cnfg only accepts rules written in Chomsky Normal Form
