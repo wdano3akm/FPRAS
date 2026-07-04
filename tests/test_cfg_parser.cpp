@@ -42,7 +42,6 @@ int main()
     assert(cfg.terminalRules[1].terminal == 1);
     assert(cfg.terminalRules[2].lhs == 12);
     assert(cfg.terminalRules[2].terminal == 2);
-    assert(false == true);
 
     return 0;
 }
