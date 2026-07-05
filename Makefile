@@ -4,11 +4,15 @@ BUILD_DIR := build
 
 .PHONY: test clean
 
-test: $(BUILD_DIR)/test_cfg_parser
+test: $(BUILD_DIR)/test_cfg_parser $(BUILD_DIR)/test_ptfromcfg
 	./$(BUILD_DIR)/test_cfg_parser
+	./$(BUILD_DIR)/test_ptfromcfg
 
 $(BUILD_DIR)/test_cfg_parser: tests/test_cfg_parser.cpp cfg/CFGParser.cpp cfg/CFGParser.hpp cfg/CFG.hpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) tests/test_cfg_parser.cpp cfg/CFGParser.cpp -o $@
+
+$(BUILD_DIR)/test_ptfromcfg: tests/test_ptfromcfg.cpp plustimes/ptfromcfg.cpp plustimes/plustimes.hpp cfg/CFG.hpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) tests/test_ptfromcfg.cpp plustimes/ptfromcfg.cpp -o $@
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
