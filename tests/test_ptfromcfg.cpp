@@ -1,9 +1,11 @@
 #include "../cfg/CFG.hpp"
 #include "../plustimes/plustimes.hpp"
+#include "cyk.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <set>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -11,6 +13,8 @@ namespace {
 
 using Monomial = std::vector<PolyVarId>;
 using Support = std::set<Monomial>;
+using Word = std::vector<TerminalId>;
+using LanguageSlice = std::set<Word>;
 
 Support supportOf(const PlusTimesProgram& program, NodeId node, std::vector<Support>& memo)
 {
@@ -70,6 +74,76 @@ PolyVarId varId(std::size_t terminalIndex, int offset, std::size_t numTerminals)
     return static_cast<PolyVarId>(static_cast<std::size_t>(offset) * numTerminals + terminalIndex);
 }
 
+Word wordFromMonomial(const Monomial& monomial, const CFG& grammar, int n)
+{
+    Word word(static_cast<std::size_t>(n), 0);
+    std::vector<bool> seen(static_cast<std::size_t>(n), false);
+    const std::size_t numTerminals = grammar.terminalIds.size();
+
+    for (PolyVarId var : monomial) {
+        const std::size_t offset = var / numTerminals;
+        const std::size_t terminalIndex = var % numTerminals;
+
+        if (offset >= static_cast<std::size_t>(n) || terminalIndex >= numTerminals || seen[offset]) {
+            throw std::logic_error("plus-times support contains a malformed positional monomial");
+        }
+
+        word[offset] = grammar.terminalIds[terminalIndex];
+        seen[offset] = true;
+    }
+
+    if (std::find(seen.begin(), seen.end(), false) != seen.end()) {
+        throw std::logic_error("plus-times support contains a monomial with missing positions");
+    }
+
+    return word;
+}
+
+LanguageSlice languageFromPlusTimes(const PlusTimesProgram& program, const CFG& grammar, int n)
+{
+    LanguageSlice language;
+    for (const Monomial& monomial : exactSupport(program)) {
+        assert(monomial.size() == static_cast<std::size_t>(n));
+        language.insert(wordFromMonomial(monomial, grammar, n));
+    }
+
+    return language;
+}
+
+void enumerateCykLanguage(
+    const CFG& grammar,
+    int n,
+    Word& prefix,
+    LanguageSlice& language)
+{
+    if (prefix.size() == static_cast<std::size_t>(n)) {
+        if (cykAccepts(grammar, prefix)) {
+            language.insert(prefix);
+        }
+        return;
+    }
+
+    for (TerminalId terminal : grammar.terminalIds) {
+        prefix.push_back(terminal);
+        enumerateCykLanguage(grammar, n, prefix, language);
+        prefix.pop_back();
+    }
+}
+
+LanguageSlice languageFromCykBruteforce(const CFG& grammar, int n)
+{
+    LanguageSlice language;
+    Word prefix;
+    enumerateCykLanguage(grammar, n, prefix, language);
+    return language;
+}
+
+void assertMatchesCykBruteforce(const CFG& grammar, int n)
+{
+    const PlusTimesProgram program = compileCFGToPlusTimes(grammar, n);
+    assert((languageFromPlusTimes(program, grammar, n) == languageFromCykBruteforce(grammar, n)));
+}
+
 CFG cfg(
     NonterminalId start,
     std::vector<NonterminalId> nonterminals,
@@ -92,6 +166,7 @@ void testOneTerminal()
     assert(program.nodes[program.root].degree == 1);
     assert((exactSupport(program) == Support{{varId(0, 0, 1)}}));
     assert(exactSupportSize(program) == 1);
+    assertMatchesCykBruteforce(grammar, 1);
 }
 
 void testWrongLengthGivesEmpty()
@@ -104,6 +179,7 @@ void testWrongLengthGivesEmpty()
 
     assert(program.root == EMPTY_NODE);
     assert(exactSupportSize(program) == 0);
+    assertMatchesCykBruteforce(grammar, 2);
 }
 
 void testSimpleConcatenation()
@@ -119,6 +195,7 @@ void testSimpleConcatenation()
 
     assert((exactSupport(program) == Support{{varId(0, 0, 2), varId(1, 1, 2)}}));
     assert(exactSupportSize(program) == 1);
+    assertMatchesCykBruteforce(grammar, 2);
 }
 
 void testTwoAlternatives()
@@ -145,6 +222,7 @@ void testTwoAlternatives()
 
     assert((exactSupport(program) == expected));
     assert(exactSupportSize(program) == 2);
+    assertMatchesCykBruteforce(grammar, 2);
 }
 
 void testAmbiguityDoesNotDuplicateWords()
@@ -167,6 +245,7 @@ void testAmbiguityDoesNotDuplicateWords()
 
     assert((exactSupport(program) == Support{{varId(0, 0, 2), varId(1, 1, 2)}}));
     assert(exactSupportSize(program) == 1);
+    assertMatchesCykBruteforce(grammar, 2);
 }
 
 void testOrderMatters()
@@ -191,6 +270,7 @@ void testOrderMatters()
 
     assert((exactSupport(program) == expected));
     assert(exactSupportSize(program) == 2);
+    assertMatchesCykBruteforce(grammar, 2);
 }
 
 void testLengthSplits()
@@ -211,6 +291,7 @@ void testLengthSplits()
 
     assert((exactSupport(program) == Support{{varId(0, 0, 2), varId(0, 1, 2), varId(1, 2, 2)}}));
     assert(exactSupportSize(program) == 1);
+    assertMatchesCykBruteforce(grammar, 3);
 }
 
 } // namespace
