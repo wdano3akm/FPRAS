@@ -54,7 +54,7 @@ private:
     std::unordered_set<Monomial, MonomialHash> data_;
 };
 
-using Support = std::optional<std::vector<Monomial>>; // if has value, then base case
+using Support = std::optional<std::vector<Monomial>>; // if has_value(), then base case
 
 struct CountCoreState {
     std::size_t n = 0;
