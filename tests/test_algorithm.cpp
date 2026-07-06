@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -65,6 +66,57 @@ PlusTimesProgram makeTwoVarProduct()
     return P;
 }
 
+PlusTimesProgram makeNestedAdd()
+{
+    PlusTimesProgram P;
+    P.numVars = 2;
+    P.degree = 1;
+    P.nodes.push_back(PTNode{PTKind::Var, 1, 0, {}});
+    P.nodes.push_back(PTNode{PTKind::Var, 1, 1, {}});
+    P.nodes.push_back(PTNode{PTKind::Add, 1, 0, {0, 1}});
+    P.nodes.push_back(PTNode{PTKind::Add, 1, 0, {2, 0}});
+    P.root = 3;
+    return P;
+}
+
+PlusTimesProgram makeLeftDeepProduct(int n)
+{
+    PlusTimesProgram P;
+    P.numVars = static_cast<uint32_t>(n);
+    P.degree = n;
+
+    for (int i = 0; i < n; ++i) {
+        P.nodes.push_back(PTNode{PTKind::Var, 1, static_cast<PolyVarId>(i), {}});
+    }
+
+    NodeId root = 0;
+    int degree = 1;
+    for (int i = 1; i < n; ++i) {
+        ++degree;
+        P.nodes.push_back(PTNode{
+            PTKind::Mul,
+            degree,
+            0,
+            {root, static_cast<NodeId>(i)}});
+        root = static_cast<NodeId>(P.nodes.size() - 1);
+    }
+
+    P.root = root;
+    return P;
+}
+
+template <typename Fn>
+void assertThrowsInvalidArgument(Fn fn)
+{
+    bool threw = false;
+    try {
+        fn();
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    assert(threw);
+}
+
 void testEnumerateSupportBounded()
 {
     const PlusTimesProgram P = makeTwoVarAdd();
@@ -118,6 +170,23 @@ void testCounterExactSmallPrograms()
     assert(counter(makeTwoVarProduct(), 1.0, 0.5) == 1.0);
 }
 
+void testAssertReadyForFPRAS()
+{
+    assertReadyForFPRAS(makeTwoVarAdd());
+    assertReadyForFPRAS(makeTwoVarProduct());
+    assertReadyForFPRAS(makeLeftDeepProduct(4));
+
+    assertThrowsInvalidArgument([] {
+        assertReadyForFPRAS(makeNestedAdd());
+    });
+    assertThrowsInvalidArgument([] {
+        assertReadyForFPRAS(makeLeftDeepProduct(16));
+    });
+    assertThrowsInvalidArgument([] {
+        counter(makeLeftDeepProduct(16), 1.0, 0.5);
+    });
+}
+
 } // namespace
 
 int main()
@@ -125,5 +194,6 @@ int main()
     testEnumerateSupportBounded();
     testRoundDown();
     testCounterExactSmallPrograms();
+    testAssertReadyForFPRAS();
     return 0;
 }

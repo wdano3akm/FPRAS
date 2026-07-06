@@ -67,6 +67,267 @@ struct CountCoreState {
 using VariableSets = std::vector<std::unordered_set<VarId>>;
 using SupportMembershipMemo = std::vector<std::unordered_map<Monomial, bool, MonomialHash>>;
 
+void requireReady(bool condition, const char* message)
+{
+    if (!condition) {
+        throw std::invalid_argument(message);
+    }
+}
+
+int ceilLog2Positive(int value)
+{
+    requireReady(value > 0, "degree must be positive");
+
+    int x = value - 1;
+    int result = 0;
+    while (x > 0) {
+        x >>= 1;
+        ++result;
+    }
+    return result;
+}
+
+std::vector<int> computeDegreesOrThrow(const PlusTimesProgram& P)
+{
+    requireReady(P.root != EMPTY_NODE, "empty plus-times program has no FPRAS root");
+    requireReady(!P.nodes.empty(), "plus-times program has no nodes");
+    requireReady(P.root < P.nodes.size(), "invalid plus-times root");
+
+    std::vector<int> degrees(P.nodes.size(), 0);
+
+    for (std::size_t i = 0; i < P.nodes.size(); ++i) {
+        const PTNode& node = P.nodes[i];
+
+        if (node.kind == PTKind::Var) {
+            requireReady(node.children.empty(), "variable plus-times node has children");
+            requireReady(P.numVars > 0 && node.var < P.numVars, "plus-times variable id is out of range");
+            requireReady(node.degree == 1, "variable plus-times node must have degree 1");
+            degrees[i] = 1;
+        } else if (node.kind == PTKind::Add) {
+            requireReady(!node.children.empty(), "addition plus-times node has no children");
+
+            int degree = -1;
+            for (NodeId child : node.children) {
+                requireReady(child < i, "plus-times nodes are not topologically ordered");
+                if (degree == -1) {
+                    degree = degrees[child];
+                } else {
+                    requireReady(degrees[child] == degree, "non-homogeneous plus-times addition");
+                }
+            }
+
+            requireReady(node.degree == degree, "stored plus-times addition degree is incorrect");
+            degrees[i] = degree;
+        } else if (node.kind == PTKind::Mul) {
+            requireReady(node.children.size() == 2, "multiplication plus-times node must have fan-in exactly 2");
+
+            const NodeId left = node.children[0];
+            const NodeId right = node.children[1];
+            requireReady(left < i && right < i, "plus-times nodes are not topologically ordered");
+
+            const int degree = degrees[left] + degrees[right];
+            requireReady(node.degree == degree, "stored plus-times multiplication degree is incorrect");
+            degrees[i] = degree;
+        } else {
+            throw std::invalid_argument("unknown plus-times node kind");
+        }
+    }
+
+    requireReady(P.degree == degrees[P.root], "program degree does not match root degree");
+    return degrees;
+}
+
+bool isTopologicallyOrdered(const PlusTimesProgram& P)
+{
+    if (P.root == EMPTY_NODE || P.root >= P.nodes.size()) {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < P.nodes.size(); ++i) {
+        for (NodeId child : P.nodes[i].children) {
+            if (child >= i) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool noConstants(const PlusTimesProgram& P)
+{
+    for (const PTNode& node : P.nodes) {
+        if (node.kind != PTKind::Var && node.kind != PTKind::Add && node.kind != PTKind::Mul) {
+            return false;
+        }
+        if (node.kind == PTKind::Add && node.children.empty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool allProductsBinary(const PlusTimesProgram& P)
+{
+    for (const PTNode& node : P.nodes) {
+        if (node.kind == PTKind::Mul && node.children.size() != 2) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool noSumHasSumChild(const PlusTimesProgram& P)
+{
+    for (const PTNode& node : P.nodes) {
+        if (node.kind != PTKind::Add) {
+            continue;
+        }
+        for (NodeId child : node.children) {
+            if (child >= P.nodes.size() || P.nodes[child].kind == PTKind::Add) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool isHomogeneous(const PlusTimesProgram& P, const std::vector<int>& degrees)
+{
+    if (degrees.size() != P.nodes.size()) {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < P.nodes.size(); ++i) {
+        const PTNode& node = P.nodes[i];
+        if (node.kind == PTKind::Var) {
+            if (degrees[i] != 1 || node.degree != 1) {
+                return false;
+            }
+        } else if (node.kind == PTKind::Add) {
+            if (node.children.empty()) {
+                return false;
+            }
+            for (NodeId child : node.children) {
+                if (child >= degrees.size() || degrees[child] != degrees[i]) {
+                    return false;
+                }
+            }
+        } else if (node.kind == PTKind::Mul) {
+            if (node.children.size() != 2) {
+                return false;
+            }
+            const NodeId left = node.children[0];
+            const NodeId right = node.children[1];
+            if (left >= degrees.size() || right >= degrees.size() ||
+                degrees[i] != degrees[left] + degrees[right]) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        if (node.degree != degrees[i]) {
+            return false;
+        }
+    }
+
+    return P.root < degrees.size() && P.degree == degrees[P.root];
+}
+
+bool disjointVarSets(const std::unordered_set<VarId>& left, const std::unordered_set<VarId>& right)
+{
+    const auto& small = left.size() <= right.size() ? left : right;
+    const auto& large = left.size() <= right.size() ? right : left;
+    for (VarId var : small) {
+        if (large.find(var) != large.end()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isStructurallyMultilinear(const PlusTimesProgram& P)
+{
+    if (!isTopologicallyOrdered(P)) {
+        return false;
+    }
+
+    VariableSets variableSets(P.nodes.size());
+
+    for (std::size_t i = 0; i < P.nodes.size(); ++i) {
+        const PTNode& node = P.nodes[i];
+        if (node.kind == PTKind::Var) {
+            if (P.numVars == 0 || node.var >= P.numVars || !node.children.empty()) {
+                return false;
+            }
+            variableSets[i].insert(static_cast<VarId>(node.var));
+        } else if (node.kind == PTKind::Add) {
+            for (NodeId child : node.children) {
+                if (child >= i) {
+                    return false;
+                }
+                variableSets[i].insert(variableSets[child].begin(), variableSets[child].end());
+            }
+        } else if (node.kind == PTKind::Mul) {
+            if (node.children.size() != 2) {
+                return false;
+            }
+            const NodeId left = node.children[0];
+            const NodeId right = node.children[1];
+            if (left >= i || right >= i || !disjointVarSets(variableSets[left], variableSets[right])) {
+                return false;
+            }
+            variableSets[i] = variableSets[left];
+            variableSets[i].insert(variableSets[right].begin(), variableSets[right].end());
+        } else {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+int rootHeightOrThrow(const PlusTimesProgram& P)
+{
+    requireReady(P.root != EMPTY_NODE, "empty plus-times program has no FPRAS root");
+    requireReady(P.root < P.nodes.size(), "invalid plus-times root");
+
+    std::vector<int> heights(P.nodes.size(), 0);
+    for (std::size_t i = 0; i < P.nodes.size(); ++i) {
+        const PTNode& node = P.nodes[i];
+        if (node.kind == PTKind::Var) {
+            requireReady(node.children.empty(), "variable plus-times node has children");
+            heights[i] = 0;
+            continue;
+        }
+
+        int height = 0;
+        for (NodeId child : node.children) {
+            requireReady(child < i, "plus-times nodes are not topologically ordered");
+            height = std::max(height, heights[child] + 1);
+        }
+        heights[i] = height;
+    }
+
+    return heights[P.root];
+}
+
+void assertReadyForFPRAS(const PlusTimesProgram& P)
+{
+    const std::vector<int> degrees = computeDegreesOrThrow(P);
+    const int rootDegree = degrees[P.root];
+
+    requireReady(isTopologicallyOrdered(P), "plus-times nodes are not topologically ordered");
+    requireReady(noConstants(P), "plus-times program contains a constant-like node");
+    requireReady(allProductsBinary(P), "multiplication plus-times node must have fan-in exactly 2");
+    requireReady(noSumHasSumChild(P), "addition plus-times nodes must be flattened");
+    requireReady(isHomogeneous(P, degrees), "plus-times program is not homogeneous");
+    requireReady(isStructurallyMultilinear(P), "plus-times program is not structurally multilinear");
+
+    const int allowedHeight = rootDegree <= 1 ? 1 : 3 * ceilLog2Positive(rootDegree);
+    requireReady(rootHeightOrThrow(P) <= allowedHeight, "plus-times root exceeds the FPRAS height bound");
+}
+
 long double powerOfTwo(std::size_t exponent)
 {
     if (exponent > static_cast<std::size_t>(std::numeric_limits<long double>::max_exponent)) {
@@ -623,19 +884,11 @@ double counter(const PlusTimesProgram& P, double epsilon, double delta)
     if (!(delta > 0.0 && delta < 1.0)) {
         throw std::invalid_argument("delta must be between 0 and 1");
     }
-    if (P.root == EMPTY_NODE || P.nodes.empty()) {
+    if (P.root == EMPTY_NODE) {
         return 0.0;
     }
-    if (P.root >= P.nodes.size()) {
-        throw std::invalid_argument("invalid plus-times root");
-    }
-    if (P.degree <= 0) {
-        throw std::invalid_argument("program degree must be positive");
-    }
+    assertReadyForFPRAS(P);
 
-    // TODO: compileCFGToPlusTimes preserves the local homogeneous (+, x) structure,
-    // but it does not implement Lemma 3 depth reduction. The proof-level counter
-    // guarantee assumes depth at most 3 * ceil(log2(n)).
     const std::size_t n = static_cast<std::size_t>(P.degree);
     const std::size_t Psize = P.nodes.size();
     const double epsilonPrime = std::min(epsilon, 0.25);
