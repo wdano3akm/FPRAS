@@ -74,6 +74,73 @@ PolyVarId varId(std::size_t terminalIndex, int offset, std::size_t numTerminals)
     return static_cast<PolyVarId>(static_cast<std::size_t>(offset) * numTerminals + terminalIndex);
 }
 
+uint32_t ceilLog2ForTest(uint32_t value)
+{
+    if (value <= 1) {
+        return 0;
+    }
+
+    --value;
+    uint32_t result = 0;
+    while (value > 0) {
+        value >>= 1;
+        ++result;
+    }
+    return result;
+}
+
+int assertWellFormedAndGetHeight(const PlusTimesProgram& program)
+{
+    if (program.root == EMPTY_NODE) {
+        assert(program.nodes.empty());
+        return 0;
+    }
+
+    assert(program.root < program.nodes.size());
+    std::vector<int> heights(program.nodes.size(), 0);
+
+    for (std::size_t i = 0; i < program.nodes.size(); ++i) {
+        const PTNode& node = program.nodes[i];
+
+        if (node.kind == PTKind::Var) {
+            assert(node.degree == 1);
+            assert(node.var < program.numVars);
+            assert(node.children.empty());
+            heights[i] = 0;
+        } else if (node.kind == PTKind::Add) {
+            assert(!node.children.empty());
+            int degree = -1;
+            int height = 0;
+            for (NodeId child : node.children) {
+                assert(child < i);
+                if (degree == -1) {
+                    degree = program.nodes[child].degree;
+                }
+                assert(program.nodes[child].degree == degree);
+                height = std::max(height, heights[child] + 1);
+            }
+            assert(node.degree == degree);
+            heights[i] = height;
+        } else {
+            assert(node.kind == PTKind::Mul);
+            assert(node.children.size() == 2);
+            const NodeId left = node.children[0];
+            const NodeId right = node.children[1];
+            assert(left < i);
+            assert(right < i);
+            assert(node.degree == program.nodes[left].degree + program.nodes[right].degree);
+            heights[i] = std::max(heights[left], heights[right]) + 1;
+        }
+    }
+
+    assert(program.degree == program.nodes[program.root].degree);
+    const int height = heights[program.root];
+    const int allowedHeight =
+        program.degree <= 1 ? 1 : static_cast<int>(3 * ceilLog2ForTest(program.degree));
+    assert(height <= allowedHeight);
+    return height;
+}
+
 Word wordFromMonomial(const Monomial& monomial, const CFG& grammar, int n)
 {
     Word word(static_cast<std::size_t>(n), 0);
@@ -141,6 +208,7 @@ LanguageSlice languageFromCykBruteforce(const CFG& grammar, int n)
 void assertMatchesCykBruteforce(const CFG& grammar, int n)
 {
     const PlusTimesProgram program = compileCFGToPlusTimes(grammar, n);
+    assertWellFormedAndGetHeight(program);
     assert((languageFromPlusTimes(program, grammar, n) == languageFromCykBruteforce(grammar, n)));
 }
 
@@ -162,6 +230,7 @@ void testOneTerminal()
 
     const PlusTimesProgram program = compileCFGToPlusTimes(grammar, 1);
 
+    assertWellFormedAndGetHeight(program);
     assert(program.root != EMPTY_NODE);
     assert(program.nodes[program.root].degree == 1);
     assert((exactSupport(program) == Support{{varId(0, 0, 1)}}));
@@ -177,6 +246,7 @@ void testWrongLengthGivesEmpty()
 
     const PlusTimesProgram program = compileCFGToPlusTimes(grammar, 2);
 
+    assertWellFormedAndGetHeight(program);
     assert(program.root == EMPTY_NODE);
     assert(exactSupportSize(program) == 0);
     assertMatchesCykBruteforce(grammar, 2);
@@ -193,6 +263,7 @@ void testSimpleConcatenation()
 
     const PlusTimesProgram program = compileCFGToPlusTimes(grammar, 2);
 
+    assertWellFormedAndGetHeight(program);
     assert((exactSupport(program) == Support{{varId(0, 0, 2), varId(1, 1, 2)}}));
     assert(exactSupportSize(program) == 1);
     assertMatchesCykBruteforce(grammar, 2);
@@ -220,6 +291,7 @@ void testTwoAlternatives()
         {varId(0, 0, 3), varId(2, 1, 3)},
     };
 
+    assertWellFormedAndGetHeight(program);
     assert((exactSupport(program) == expected));
     assert(exactSupportSize(program) == 2);
     assertMatchesCykBruteforce(grammar, 2);
@@ -243,6 +315,7 @@ void testAmbiguityDoesNotDuplicateWords()
 
     const PlusTimesProgram program = compileCFGToPlusTimes(grammar, 2);
 
+    assertWellFormedAndGetHeight(program);
     assert((exactSupport(program) == Support{{varId(0, 0, 2), varId(1, 1, 2)}}));
     assert(exactSupportSize(program) == 1);
     assertMatchesCykBruteforce(grammar, 2);
@@ -268,6 +341,7 @@ void testOrderMatters()
         {varId(1, 0, 2), varId(0, 1, 2)},
     };
 
+    assertWellFormedAndGetHeight(program);
     assert((exactSupport(program) == expected));
     assert(exactSupportSize(program) == 2);
     assertMatchesCykBruteforce(grammar, 2);
@@ -289,9 +363,39 @@ void testLengthSplits()
 
     const PlusTimesProgram program = compileCFGToPlusTimes(grammar, 3);
 
+    assertWellFormedAndGetHeight(program);
     assert((exactSupport(program) == Support{{varId(0, 0, 2), varId(0, 1, 2), varId(1, 2, 2)}}));
     assert(exactSupportSize(program) == 1);
     assertMatchesCykBruteforce(grammar, 3);
+}
+
+void testSkewRecursiveGrammarIsDepthReduced()
+{
+    const TerminalId a = 1;
+    std::vector<NonterminalId> nonterminals;
+    std::vector<TerminalRule> terminalRules;
+    std::vector<BinaryRule> binaryRules;
+
+    for (NonterminalId id = 10; id < 18; ++id) {
+        nonterminals.push_back(id);
+    }
+    terminalRules.push_back({10, a});
+    for (NonterminalId id = 11; id < 18; ++id) {
+        binaryRules.push_back({id, static_cast<NonterminalId>(id - 1), 10});
+    }
+
+    const CFG grammar = cfg(17, nonterminals, {a}, terminalRules, binaryRules);
+    const PlusTimesProgram program = compileCFGToPlusTimes(grammar, 8);
+    const int height = assertWellFormedAndGetHeight(program);
+
+    Monomial expected;
+    for (int offset = 0; offset < 8; ++offset) {
+        expected.push_back(varId(0, offset, 1));
+    }
+
+    assert((exactSupport(program) == Support{expected}));
+    assert(height <= static_cast<int>(3 * ceilLog2ForTest(8)));
+    assertMatchesCykBruteforce(grammar, 8);
 }
 
 } // namespace
@@ -305,6 +409,7 @@ int main()
     testAmbiguityDoesNotDuplicateWords();
     testOrderMatters();
     testLengthSplits();
+    testSkewRecursiveGrammarIsDepthReduced();
 
     return 0;
 }
