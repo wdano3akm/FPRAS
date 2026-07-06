@@ -105,6 +105,45 @@ PlusTimesProgram makeLeftDeepProduct(int n)
     return P;
 }
 
+NodeId appendBalancedProduct(PlusTimesProgram& P, const std::vector<NodeId>& factors, int begin, int end)
+{
+    if (end - begin == 1) {
+        return factors[begin];
+    }
+
+    const int mid = begin + (end - begin) / 2;
+    const NodeId left = appendBalancedProduct(P, factors, begin, mid);
+    const NodeId right = appendBalancedProduct(P, factors, mid, end);
+    P.nodes.push_back(PTNode{
+        PTKind::Mul,
+        P.nodes[left].degree + P.nodes[right].degree,
+        0,
+        {left, right}});
+    return static_cast<NodeId>(P.nodes.size() - 1);
+}
+
+PlusTimesProgram makeBinaryChoiceProduct(int degree)
+{
+    PlusTimesProgram P;
+    P.numVars = static_cast<uint32_t>(2 * degree);
+    P.degree = degree;
+
+    std::vector<NodeId> factors;
+    factors.reserve(static_cast<std::size_t>(degree));
+
+    for (int i = 0; i < degree; ++i) {
+        const NodeId first = static_cast<NodeId>(P.nodes.size());
+        P.nodes.push_back(PTNode{PTKind::Var, 1, static_cast<PolyVarId>(2 * i), {}});
+        const NodeId second = static_cast<NodeId>(P.nodes.size());
+        P.nodes.push_back(PTNode{PTKind::Var, 1, static_cast<PolyVarId>(2 * i + 1), {}});
+        P.nodes.push_back(PTNode{PTKind::Add, 1, 0, {first, second}});
+        factors.push_back(static_cast<NodeId>(P.nodes.size() - 1));
+    }
+
+    P.root = appendBalancedProduct(P, factors, 0, degree);
+    return P;
+}
+
 template <typename Fn>
 void assertThrowsInvalidArgument(Fn fn)
 {
@@ -175,6 +214,7 @@ void testAssertReadyForFPRAS()
     assertReadyForFPRAS(makeTwoVarAdd());
     assertReadyForFPRAS(makeTwoVarProduct());
     assertReadyForFPRAS(makeLeftDeepProduct(4));
+    assertReadyForFPRAS(makeBinaryChoiceProduct(12));
 
     assertThrowsInvalidArgument([] {
         assertReadyForFPRAS(makeNestedAdd());
@@ -187,6 +227,33 @@ void testAssertReadyForFPRAS()
     });
 }
 
+void testCountCoreSamplingSmoke()
+{
+    const int degree = 12;
+    const PlusTimesProgram P = makeBinaryChoiceProduct(degree);
+    const double exact = static_cast<double>(std::size_t{1} << degree);
+
+    Support stoppedAtTestThreshold = enumerateSupportBounded(P, P.root, 65);
+    assert(!stoppedAtTestThreshold.has_value());
+
+    std::vector<double> estimates;
+    for (uint32_t seed : {12345u, 23456u, 34567u, 45678u, 56789u}) {
+        seedSamplingForTesting(seed);
+        estimates.push_back(countCoreWithSupportThreshold(
+            P,
+            4,
+            8,
+            1000000,
+            1.0,
+            64));
+    }
+
+    const double estimate = median(estimates);
+    assert(estimate > 0.0);
+    assert(estimate > exact / 4.0);
+    assert(estimate < exact * 4.0);
+}
+
 } // namespace
 
 int main()
@@ -195,5 +262,6 @@ int main()
     testRoundDown();
     testCounterExactSmallPrograms();
     testAssertReadyForFPRAS();
+    testCountCoreSamplingSmoke();
     return 0;
 }

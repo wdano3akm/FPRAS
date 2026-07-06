@@ -509,11 +509,21 @@ double clampProbability(double p)
     return p;
 }
 
-bool keepWithProbability(double p)
+std::mt19937& samplingGenerator()
 {
     static thread_local std::mt19937 generator(std::random_device{}());
+    return generator;
+}
+
+void seedSamplingForTesting(uint32_t seed)
+{
+    samplingGenerator().seed(seed);
+}
+
+bool keepWithProbability(double p)
+{
     std::bernoulli_distribution keep(clampProbability(p));
-    return keep(generator);
+    return keep(samplingGenerator());
 }
 
 MonomialSet reduce(const std::vector<Monomial>& monomials, double p){
@@ -801,20 +811,19 @@ void estimateSamplePlus(
   }
 }
 
-double countCore(
+double countCoreWithSupportThreshold(
     const PlusTimesProgram& P,
     std::size_t ns,
     std::size_t nt,
     std::size_t theta,
-    double kappa
+    double kappa,
+    std::size_t supportThreshold
 ) {
     const NodeId o = P.root;
     const std::size_t n = static_cast<std::size_t>(P.degree);
-    const std::size_t Psize = P.nodes.size();
-    const std::size_t threshold = 16ull * n * Psize * Psize;
     const std::size_t m = ns * nt;
 
-    Support rootSupp = enumerateSupportBounded(P, o, threshold + 1);
+    Support rootSupp = enumerateSupportBounded(P, o, supportThreshold + 1);
 
     if (rootSupp.has_value()) {
         return static_cast<double>(rootSupp->size());
@@ -828,7 +837,7 @@ double countCore(
     st.effectiveHeights.resize(P.nodes.size(), -1);
 
     for (NodeId q : nodesBottomUp(P)) {
-        auto supp = enumerateSupportBounded(P, q, threshold + 1);
+        auto supp = enumerateSupportBounded(P, q, supportThreshold + 1);
 
         if (supp.has_value()) {
             st.effectiveHeights[q] = 0;
@@ -857,6 +866,19 @@ double countCore(
     }
 
     return st.p[o] > 0.0 ? (16.0 * n) / st.p[o] : 0.0;
+}
+
+double countCore(
+    const PlusTimesProgram& P,
+    std::size_t ns,
+    std::size_t nt,
+    std::size_t theta,
+    double kappa
+) {
+    const std::size_t n = static_cast<std::size_t>(P.degree);
+    const std::size_t Psize = P.nodes.size();
+    const std::size_t threshold = 16ull * n * Psize * Psize;
+    return countCoreWithSupportThreshold(P, ns, nt, theta, kappa, threshold);
 }
 
 std::size_t ceilToSize(double value, const char* name)
