@@ -2,6 +2,8 @@
 #include "../cfg/CFG.hpp"
 
 #include <algorithm>
+#include <set>
+#include <stack>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -202,6 +204,34 @@ std::size_t checkedProduct(std::size_t left, std::size_t right, const char* mess
 
 } // namespace
 
+void makeMinimal(PlusTimesProgram &pt)
+{
+  if (pt.root == EMPTY_NODE) {
+    pt.nodes.clear();
+    return;
+  }
+
+  std::vector<char> marked(pt.nodes.size(), false);
+
+  std::vector<NodeId> oldToNew(pt.nodes.size(), EMPTY_NODE);
+  std::vector<PTNode> nnodes;
+
+  for (NodeId old = 0; old < pt.nodes.size(); ++old) {
+    if (!marked[old]) continue;
+    oldToNew[old] = static_cast<NodeId>(nnodes.size());
+    nnodes.push_back(pt.nodes[old]);
+  }
+
+  for (PTNode& node : nnodes) {
+    for (NodeId& child : node.children) {
+      child = oldToNew[child];
+    }
+  }
+
+  pt.root = oldToNew[pt.root];
+  pt.nodes = std::move(nnodes);
+}
+
 PlusTimesProgram compileCFGToPlusTimes(const CFG& cfg, int n)
 {
   if (n < 0) {
@@ -305,5 +335,8 @@ PlusTimesProgram compileCFGToPlusTimes(const CFG& cfg, int n)
   const std::size_t start = lookupDense(nonterminalIndex, cfg.start, "nonterminal");
   program.root = dp[dpIndex(start, n, 0, n)];
 
+  makeMinimal(program);
+
   return program;
+
 }
