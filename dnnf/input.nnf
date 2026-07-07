@@ -2,7 +2,7 @@ https://github.com/crillab/d4
 o, for an OR node
 f, for a false leaf
 t, for a true leaf
-a, for an AND node (not present in this example)
+a, for an AND node 
 
 The second argument just after the type of node is its index.
 
