@@ -1,5 +1,6 @@
-#include "../plustimes/plustimes.hpp"
+#include "algorithm.hpp"
 #include <algorithm>
+#include <boost/multiprecision/fwd.hpp>
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -10,10 +11,18 @@
 #include <optional>
 #include <unordered_set>
 #include <boost/container_hash/hash.hpp>
+#include <boost/multiprecision/cpp_int.hpp>
+#include <iostream>
 
+#define DEBUG
 
 using VarId = PolyVarId; // TODO: create functs cfgVar and ddnfVar to translate into id
+using boost::multiprecision::cpp_int;
 
+// A monomial is a vector of variables 
+// whose order does not matter
+// Every monomial is assumed to be homogeneous. Therefore
+// Degree(Monomial) == length(CFG_word)
 struct Monomial {
     std::vector<VarId> vars;
 
@@ -22,6 +31,8 @@ struct Monomial {
     }
 };
 
+// Compute an hash for every Monomial using
+// the variables contained inside it
 struct MonomialHash {
     std::size_t operator()(const Monomial& m) const {
         return boost::hash_range(m.vars.begin(), m.vars.end());
@@ -54,8 +65,12 @@ private:
     std::unordered_set<Monomial, MonomialHash> data_;
 };
 
-using Support = std::optional<std::vector<Monomial>>; // if has_value(), then base case
+// if has_value(), then base case. Otherwise, assume 
+// we enumerated Q^0 entirely and there is still more to go
+using Support = std::optional<std::vector<Monomial>>; 
 
+// Struct used to store the state of the current
+// counter iteration.
 struct CountCoreState {
     std::size_t n = 0;
     double kappa = 0.0;
@@ -67,6 +82,10 @@ struct CountCoreState {
 using VariableSets = std::vector<std::unordered_set<VarId>>;
 using SupportMembershipMemo = std::vector<std::unordered_map<Monomial, bool, MonomialHash>>;
 
+#ifndef CFGFPRAS_KEEP_ALL_SAMPLES
+#define CFGFPRAS_RELEASE_UNUSED_SAMPLES
+#endif
+
 void requireReady(bool condition, const char* message)
 {
     if (!condition) {
@@ -74,6 +93,12 @@ void requireReady(bool condition, const char* message)
     }
 }
 
+// Description:
+//  Efficient implementation of ceil(log2) using right-bitshift
+// Input
+//  int value 
+// Output 
+//  int
 int ceilLog2Positive(int value)
 {
     requireReady(value > 0, "degree must be positive");
@@ -87,6 +112,17 @@ int ceilLog2Positive(int value)
     return result;
 }
 
+// Description: 
+//  Iterates through the plus,times tree and computes 
+//  the degree of all nodes inside it.
+//  - Variable nodes have degree 1 
+//  - Addition nodes, same degree as children (all same deg)
+//  - Multiplication nodes, degree is sum of the multiplied monomials degree
+//  Asserts that the root is the same degree as precomputed program deg
+// Input: 
+//  PlusTimesProgram &P 
+// Output: 
+//  vector<int> the array with degrees
 std::vector<int> computeDegreesOrThrow(const PlusTimesProgram& P)
 {
     requireReady(P.root != EMPTY_NODE, "empty plus-times program has no FPRAS root");
@@ -137,6 +173,12 @@ std::vector<int> computeDegreesOrThrow(const PlusTimesProgram& P)
     return degrees;
 }
 
+// Description:
+//  Ensures that each child has higher NodeId than parent 
+// Input: 
+//  PlusTimesProgram &P
+// Output:
+//  bool is tree topologically sorted?T/F
 bool isTopologicallyOrdered(const PlusTimesProgram& P)
 {
     if (P.root == EMPTY_NODE || P.root >= P.nodes.size()) {
@@ -152,7 +194,14 @@ bool isTopologicallyOrdered(const PlusTimesProgram& P)
     }
     return true;
 }
-
+// Description: 
+//  Checks that the plus,times tree does not contain 
+//  Nodes that are not Var, Add or Mul and that every Add node has
+//  at least one child 
+// Input:
+//  PlusTimesProgram &P 
+// Output:
+//  bool is tree compliant?T/F
 bool noConstants(const PlusTimesProgram& P)
 {
     for (const PTNode& node : P.nodes) {
@@ -166,6 +215,12 @@ bool noConstants(const PlusTimesProgram& P)
     return true;
 }
 
+// Description:
+//  Checks that all Mul nodes have exactly 2 children
+// Input:
+//  PlusTimesProgram &P
+// Output: 
+//  bool is tree compliant?T/F
 bool allProductsBinary(const PlusTimesProgram& P)
 {
     for (const PTNode& node : P.nodes) {
@@ -176,6 +231,13 @@ bool allProductsBinary(const PlusTimesProgram& P)
     return true;
 }
 
+// Description: 
+//  Check that all nodes of type Sum have been normalized.
+//  I.e. No node of type sum should have a children of type sum
+// Input: 
+//  PlusTimesProgram &P 
+// Output: 
+//  bool are all sum nodes compliant?T/F
 bool noSumHasSumChild(const PlusTimesProgram& P)
 {
     for (const PTNode& node : P.nodes) {
@@ -193,47 +255,20 @@ bool noSumHasSumChild(const PlusTimesProgram& P)
 
 bool isHomogeneous(const PlusTimesProgram& P, const std::vector<int>& degrees)
 {
-    if (degrees.size() != P.nodes.size()) {
+    try {
+        return degrees == computeDegreesOrThrow(P);
+    } catch (const std::invalid_argument&) {
         return false;
     }
-
-    for (std::size_t i = 0; i < P.nodes.size(); ++i) {
-        const PTNode& node = P.nodes[i];
-        if (node.kind == PTKind::Var) {
-            if (degrees[i] != 1 || node.degree != 1) {
-                return false;
-            }
-        } else if (node.kind == PTKind::Add) {
-            if (node.children.empty()) {
-                return false;
-            }
-            for (NodeId child : node.children) {
-                if (child >= degrees.size() || degrees[child] != degrees[i]) {
-                    return false;
-                }
-            }
-        } else if (node.kind == PTKind::Mul) {
-            if (node.children.size() != 2) {
-                return false;
-            }
-            const NodeId left = node.children[0];
-            const NodeId right = node.children[1];
-            if (left >= degrees.size() || right >= degrees.size() ||
-                degrees[i] != degrees[left] + degrees[right]) {
-                return false;
-            }
-        } else {
-            return false;
-        }
-
-        if (node.degree != degrees[i]) {
-            return false;
-        }
-    }
-
-    return P.root < degrees.size() && P.degree == degrees[P.root];
 }
 
+// Description: 
+//  Checks that two unordered_set are disjoint.
+// Input:
+//  unordered_set<VarId> &a
+//  unordered_set<VarId> &b
+// Output:
+//  bool true if disjoint
 bool disjointVarSets(const std::unordered_set<VarId>& left, const std::unordered_set<VarId>& right)
 {
     const auto& small = left.size() <= right.size() ? left : right;
@@ -246,47 +281,47 @@ bool disjointVarSets(const std::unordered_set<VarId>& left, const std::unordered
     return true;
 }
 
+// Description:
+//  Asserts that right and left subprogram of multiplication 
+//  node reference disjoint subsets
+// Input:
+//  PlusTimesProgram &P
+// Output: 
+//  bool are all the set disjoint?T/F
 bool isStructurallyMultilinear(const PlusTimesProgram& P)
 {
-    if (!isTopologicallyOrdered(P)) {
-        return false;
-    }
-
     VariableSets variableSets(P.nodes.size());
 
     for (std::size_t i = 0; i < P.nodes.size(); ++i) {
         const PTNode& node = P.nodes[i];
         if (node.kind == PTKind::Var) {
-            if (P.numVars == 0 || node.var >= P.numVars || !node.children.empty()) {
-                return false;
-            }
             variableSets[i].insert(static_cast<VarId>(node.var));
         } else if (node.kind == PTKind::Add) {
             for (NodeId child : node.children) {
-                if (child >= i) {
-                    return false;
-                }
                 variableSets[i].insert(variableSets[child].begin(), variableSets[child].end());
             }
         } else if (node.kind == PTKind::Mul) {
-            if (node.children.size() != 2) {
-                return false;
-            }
             const NodeId left = node.children[0];
             const NodeId right = node.children[1];
-            if (left >= i || right >= i || !disjointVarSets(variableSets[left], variableSets[right])) {
+            if (!disjointVarSets(variableSets[left], variableSets[right])) {
                 return false;
             }
             variableSets[i] = variableSets[left];
             variableSets[i].insert(variableSets[right].begin(), variableSets[right].end());
-        } else {
-            return false;
         }
     }
 
     return true;
 }
 
+// Description:
+//  Computes overrall height of tree.
+//  In addition, check that the node's height is 0 if variable node.
+//  Otherwise, computes height as highest child plus one
+// Input:
+//  PlusTimesProgram &P
+// Return: 
+//  int height of root
 int rootHeightOrThrow(const PlusTimesProgram& P)
 {
     requireReady(P.root != EMPTY_NODE, "empty plus-times program has no FPRAS root");
@@ -312,6 +347,19 @@ int rootHeightOrThrow(const PlusTimesProgram& P)
     return heights[P.root];
 }
 
+// Description:
+//  Performs the following checks:
+//  - toposort of tree 
+//  - only var/mul/add nodes 
+//  - all mul have binary children 
+//  - no sum has sum child
+//  - homogeneous tree 
+//  - multilinear 
+//  - height <= 3 * ceil(log(rootDeg))
+// Input: 
+//  PlusTimesProgram &P
+// Output:
+//  void
 void assertReadyForFPRAS(const PlusTimesProgram& P)
 {
     const std::vector<int> degrees = computeDegreesOrThrow(P);
@@ -498,6 +546,18 @@ Support enumerateSupportBounded(const PlusTimesProgram& P, NodeId o, std::size_t
     return std::vector<Monomial>(result.support.begin(), result.support.end());
 }
 
+std::optional<std::size_t> supportSizeBounded(
+    const PlusTimesProgram& P,
+    NodeId o,
+    std::size_t threshold)
+{
+    Support support = enumerateSupportBounded(P, o, threshold);
+    if (!support.has_value()) {
+        return std::nullopt;
+    }
+    return support->size();
+}
+
 double clampProbability(double p)
 {
     if (p <= 0.0) {
@@ -584,6 +644,34 @@ std::vector<NodeId> nodesBottomUp(const PlusTimesProgram &P)
     nodesBottomUpDfs(P, P.root, seen, order);
     return order;
 }
+
+#ifdef CFGFPRAS_RELEASE_UNUSED_SAMPLES
+std::vector<std::size_t> countRemainingSampleUses(
+    const PlusTimesProgram& P,
+    const std::vector<NodeId>& order)
+{
+    std::vector<std::size_t> remainingUses(P.nodes.size(), 0);
+    for (NodeId q : order) {
+        for (NodeId child : P.nodes[q].children) {
+            if (child < remainingUses.size()) {
+                ++remainingUses[child];
+            }
+        }
+    }
+    return remainingUses;
+}
+
+void allocateSampleSlots(CountCoreState& st, NodeId q, std::size_t count)
+{
+    st.samples[q].clear();
+    st.samples[q].resize(count);
+}
+
+void releaseSampleSlots(std::vector<MonomialSet>& samples)
+{
+    std::vector<MonomialSet>().swap(samples);
+}
+#endif
 
 VariableSets computeVariableSets(const PlusTimesProgram& P)
 {
@@ -815,7 +903,7 @@ double countCoreWithSupportThreshold(
     const PlusTimesProgram& P,
     std::size_t ns,
     std::size_t nt,
-    std::size_t theta,
+    cpp_int theta,
     double kappa,
     std::size_t supportThreshold
 ) {
@@ -826,17 +914,29 @@ double countCoreWithSupportThreshold(
     Support rootSupp = enumerateSupportBounded(P, o, supportThreshold + 1);
 
     if (rootSupp.has_value()) {
+        std::cout << "enumerating" << std::endl;
         return static_cast<double>(rootSupp->size());
     }
+
+    const std::vector<NodeId> order = nodesBottomUp(P);
 
     CountCoreState st;
     st.n = n;
     st.kappa = kappa;
     st.p.resize(P.nodes.size());
+#ifdef CFGFPRAS_RELEASE_UNUSED_SAMPLES
+    st.samples.resize(P.nodes.size());
+    std::vector<std::size_t> remainingSampleUses =
+        countRemainingSampleUses(P, order);
+#else
     st.samples.resize(P.nodes.size(), std::vector<MonomialSet>(m));
+#endif
     st.effectiveHeights.resize(P.nodes.size(), -1);
 
-    for (NodeId q : nodesBottomUp(P)) {
+    for (NodeId q : order) {
+#ifdef CFGFPRAS_RELEASE_UNUSED_SAMPLES
+        allocateSampleSlots(st, q, m);
+#endif
         auto supp = enumerateSupportBounded(P, q, supportThreshold + 1);
 
         if (supp.has_value()) {
@@ -863,6 +963,17 @@ double countCoreWithSupportThreshold(
                 return 0.0;
             }
         }
+
+#ifdef CFGFPRAS_RELEASE_UNUSED_SAMPLES
+        for (NodeId child : P.nodes[q].children) {
+            assert(child < remainingSampleUses.size());
+            assert(remainingSampleUses[child] > 0);
+            --remainingSampleUses[child];
+            if (remainingSampleUses[child] == 0) {
+                releaseSampleSlots(st.samples[child]);
+            }
+        }
+#endif
     }
 
     return st.p[o] > 0.0 ? (16.0 * n) / st.p[o] : 0.0;
@@ -872,7 +983,7 @@ double countCore(
     const PlusTimesProgram& P,
     std::size_t ns,
     std::size_t nt,
-    std::size_t theta,
+    cpp_int theta,
     double kappa
 ) {
     const std::size_t n = static_cast<std::size_t>(P.degree);
@@ -913,14 +1024,34 @@ double counter(const PlusTimesProgram& P, double epsilon, double delta)
 
     const std::size_t n = static_cast<std::size_t>(P.degree);
     const std::size_t Psize = P.nodes.size();
+    const std::size_t exactThreshold = checkedMultiply(
+        checkedMultiply(checkedMultiply(16, n, "support threshold overflows size_t"), Psize, "support threshold overflows size_t"),
+        Psize,
+        "support threshold overflows size_t");
+    if (exactThreshold < std::numeric_limits<std::size_t>::max()) {
+        std::optional<std::size_t> exactSupportSize =
+            supportSizeBounded(P, P.root, exactThreshold + 1);
+
+        std::cout << exactThreshold << std::endl;
+        if (exactSupportSize.has_value()) {
+            return static_cast<double>(*exactSupportSize);
+        }
+    }
+#ifdef DEBUG
+    const double epsilonPrime = std::min(epsilon, 1.);
+#else
     const double epsilonPrime = std::min(epsilon, 0.25);
+#endif
     const double kappa = epsilonPrime / (4.0 * std::pow(static_cast<double>(n + 1), 3.0));
     const std::size_t ns = ceilToSize(12.0 / (kappa * kappa), "ns overflows size_t");
     const std::size_t nt = checkedMultiply(checkedMultiply(8, n, "nt overflows size_t"), Psize, "nt overflows size_t");
+    /*
     const std::size_t theta = checkedMultiply(
         checkedMultiply(checkedMultiply(checkedMultiply(512, ns, "theta overflows size_t"), nt, "theta overflows size_t"), n, "theta overflows size_t"),
         Psize,
         "theta overflows size_t");
+        */
+    const cpp_int theta = 512 * ns * nt * n * Psize;
     const std::size_t repetitions = std::max<std::size_t>(
         1,
         ceilToSize(16.0 * std::log(1.0 / delta), "repetitions overflow size_t"));
