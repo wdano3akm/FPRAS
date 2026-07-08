@@ -1,14 +1,13 @@
 #pragma once
 
 #include "../plustimes/plustimes.hpp"
+#include "../utils/alg_checks.hpp"
 #include <boost/multiprecision/cpp_int.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 
 using boost::multiprecision::cpp_int;
-
-void assertReadyForFPRAS(const PlusTimesProgram& P);
 
 double countCore(
     const PlusTimesProgram& P,
