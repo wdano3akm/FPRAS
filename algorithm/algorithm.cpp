@@ -84,6 +84,12 @@ using SupportMembershipMemo = std::vector<std::unordered_map<Monomial, bool, Mon
 #define CFGFPRAS_RELEASE_UNUSED_SAMPLES
 #endif
 
+// Description:
+//  Checked power of two function
+// Input:
+//  size_t exponent 
+// Output:
+//  double 2**exponent
 long double powerOfTwo(std::size_t exponent)
 {
     if (exponent > static_cast<std::size_t>(std::numeric_limits<long double>::max_exponent)) {
@@ -153,12 +159,35 @@ struct BoundedSupportResult {
     MonomialSet support;
 };
 
+// Description:
+//  Adds a monomial to the support.
+//  Checks whether the size of the support is 
+//  below the threshold
+// Input:
+//  MonomialSet& support 
+//  Monomial &monomial 
+//  size_t threshold
+// Output
+//  bool support.size() < threshold
 bool insertBounded(MonomialSet& support, const Monomial& monomial, std::size_t threshold)
 {
     support.insert(monomial);
     return support.size() < threshold;
 }
 
+// Description:
+//  Recursively iterates through the tree from the 
+//  Var nodes up. Returns a struct with the set of monomials
+//  counted and a bool on whether the enumeration from the node
+//  is completed
+// Input:
+//  PlusTimesProgram &P
+//  NodeId q
+//  size_t threshold
+//  vector<BoundedSupportResult>& memo
+// Output:
+//  BoundedSupportResult struct with complete, computed 
+//  and memoization
 BoundedSupportResult enumerateSupportBoundedNode(
     const PlusTimesProgram& P,
     NodeId q,
@@ -239,6 +268,17 @@ BoundedSupportResult enumerateSupportBoundedNode(
     return cached;
 }
 
+// Description:
+//  Wrapper over enumerateSupportBoundedNode returning
+//  a vector with every monomial inside the support while 
+//  under the threshold
+// Input:
+//  PlusTimesProgram& P
+//  NodeId o 
+//  size_t threshold
+// Output: 
+//  Support, optional vector. if has_value() then
+//  base case
 Support enumerateSupportBounded(const PlusTimesProgram& P, NodeId o, std::size_t threshold)
 {
     if (threshold == 0) {
@@ -254,6 +294,14 @@ Support enumerateSupportBounded(const PlusTimesProgram& P, NodeId o, std::size_t
     return std::vector<Monomial>(result.support.begin(), result.support.end());
 }
 
+// Description:
+//  Computes the support size until the threshold is hit.
+// Input:
+//  PlusTimesProgram &P
+//  NodeId o 
+//  size_t threshold
+// Output:
+//  optional<size_t> if has_value() base case and size, otherwise treshold
 std::optional<std::size_t> supportSizeBounded(
     const PlusTimesProgram& P,
     NodeId o,
@@ -276,24 +324,34 @@ double clampProbability(double p)
     }
     return p;
 }
-
+// returns a mersenne twister 
 std::mt19937& samplingGenerator()
 {
     static thread_local std::mt19937 generator(std::random_device{}());
     return generator;
 }
 
+// helper function with set seed
 void seedSamplingForTesting(uint32_t seed)
 {
     samplingGenerator().seed(seed);
 }
 
+// returns true/false with probability p
 bool keepWithProbability(double p)
 {
     std::bernoulli_distribution keep(clampProbability(p));
     return keep(samplingGenerator());
 }
 
+// Description:
+//  Keeps Monomials from the input in the returned MonomialSet 
+//  with probability p
+// Input:
+//  vector<Monomial>& monomials
+//  double p
+// Output: 
+//  MonomialSet returned set
 MonomialSet reduce(const std::vector<Monomial>& monomials, double p){
     MonomialSet result;
     for (const Monomial& m : monomials) {
@@ -304,6 +362,14 @@ MonomialSet reduce(const std::vector<Monomial>& monomials, double p){
     return result;
 }
 
+// Description:
+//  Keeps Monomials from the input in the returned MonomialSet 
+//  with probability p
+// Input:
+//  MonomialSet& monomials
+//  double p
+// Output: 
+//  MonomialSet returned set
 MonomialSet reduce(const MonomialSet& monomials, double p)
 {
     MonomialSet result;
@@ -315,6 +381,15 @@ MonomialSet reduce(const MonomialSet& monomials, double p)
     return result;
 }
 
+// Description:
+//  Creates the cross product with left and right 
+//  MonomialSet
+// Input: 
+//  MonomialSet& left
+//  MonomialSet& right
+// Output:
+//  vector<Monomial> vector with elements repr.
+//    the cross product results
 std::vector<Monomial> cross(const MonomialSet& left, const MonomialSet& right)
 {
     MonomialSet products;
@@ -331,6 +406,14 @@ std::vector<Monomial> cross(const MonomialSet& left, const MonomialSet& right)
     return std::vector<Monomial>(products.begin(), products.end());
 }
 
+// Description:
+//  Populates a vector with the the nodes in the plus,times 
+//  program via bottom up dfs
+// Input
+//  PlusTimesProgram& P the pt program
+//  NodeId q node from which iteration starts
+//  vector<char>& seen already encountered nodes
+//  vector<NodeId>& order vector to be populated
 void nodesBottomUpDfs(const PlusTimesProgram& P, NodeId q, std::vector<char>& seen, std::vector<NodeId>& order)
 {
     if (q == EMPTY_NODE || q >= P.nodes.size() || seen[q]) {
@@ -345,6 +428,13 @@ void nodesBottomUpDfs(const PlusTimesProgram& P, NodeId q, std::vector<char>& se
     order.push_back(q);
 }
 
+// Description:
+//  Wrapper over nodesBottomUpDfs.
+//  Creates a vector with elements sorted in dfs fashion
+// Input:
+//  PlusTimesProgram& P the plus,times program
+// Output: 
+//  vector<NodeId> the populated vector
 std::vector<NodeId> nodesBottomUp(const PlusTimesProgram &P)
 {
     std::vector<NodeId> order;
@@ -381,6 +471,14 @@ void releaseSampleSlots(std::vector<MonomialSet>& samples)
 }
 #endif
 
+// Description:
+//  Creates a vector of sets containining all children sets (if node not var)
+//  or its value (if node is var).
+//  The output is sorted as bottom up dfs would order the nodes.
+// Input:
+//  PlusTimesProgram& P
+// Output:
+//  VariableSets (alias of vec<un_set<uint>>)
 VariableSets computeVariableSets(const PlusTimesProgram& P)
 {
     VariableSets variableSets(P.nodes.size());
@@ -399,6 +497,17 @@ VariableSets computeVariableSets(const PlusTimesProgram& P)
     return variableSets;
 }
 
+// Description:
+//  Recursively descends down the tree to check whether the monomial
+//  is in the support of the specified node
+// Input:
+//  PlusTimesProgram& P 
+//  NodeId q 
+//  Monomial& monomial
+//  VariableSets& variableSets
+//  SupportMembershipMemo& memo
+// Output:
+//  bool
 bool isInSupport(
     const PlusTimesProgram& P,
     NodeId q,
@@ -462,6 +571,20 @@ bool isInSupport(
     return result;
 }
 
+// Description:
+//  For each of the children in the vector, 
+//  checks whether the monomials contained appear 
+//  in any of the support of nodes that have priority over it.
+//  If not, it is added to the resulting union. Ensuring that 
+//  each monomial can contribute once only 
+// Input: 
+//  PlusTimesProgram& P
+//  vector<NodeId>& children
+//  vector<MonomialSet>& childSamples
+//  VariableSets& variableSets
+//  SupportMembershipMemo& memo
+// Output:
+//  MonomialSet set of monomial result of union
 MonomialSet sampleUnion(
     const PlusTimesProgram& P,
     const std::vector<NodeId>& children,
@@ -521,6 +644,16 @@ int effectiveHeightFromChildren(const PlusTimesProgram& P, NodeId q, const Count
     return height;
 }
 
+// Description
+//  Sample times implementation.
+//  Verbatim from paper
+// Input:
+//  PlusTimesProgram &P 
+//  NodeId q 
+//  CountCoreState &st
+//  size_t n
+//  size_t ns
+//  size_t nt
 void estimateSampleTimes(
     const PlusTimesProgram &P,
     NodeId q,
@@ -554,6 +687,8 @@ void estimateSampleTimes(
   }
 }
 
+// Description
+//  esimator of the samples when union is performed 
 void estimateSamplePlus(
     const PlusTimesProgram &P,
     NodeId q,
