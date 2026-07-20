@@ -5,9 +5,6 @@
 #include <stdexcept>
 #include <vector>
 
- // namespace
-
-
 PlusTimesProgram compileCFGToPlusTimes(const CFG& cfg, int n)
 {
   if (n < 0) {
