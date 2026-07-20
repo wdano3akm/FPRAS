@@ -9,7 +9,7 @@ using DNNFNodeId = uint32_t;
 using NodeId = DNNFNodeId;
 using DNNFLiteral = int32_t;
 
-static constexpr NodeId EMPTY_NODE = std::numeric_limits<NodeId>::max();
+static constexpr DNNFNodeId DNNF_EMPTY_NODE = std::numeric_limits<DNNFNodeId>::max();
 
 enum DNNFKind {
     Or,
@@ -20,7 +20,7 @@ enum DNNFKind {
 
 // d4 stores propagated literals on an arc from a parent to a child.
 struct DNNFArc {
-    DNNFNodeId target = EMPTY_NODE;
+    DNNFNodeId target = DNNF_EMPTY_NODE;
     std::vector<DNNFLiteral> literals;
 };
 
@@ -33,7 +33,7 @@ struct DNNFNode {
 
 struct DNNF {
     std::vector<DNNFNode> nodes;
-    DNNFNodeId root = EMPTY_NODE;
+    DNNFNodeId root = DNNF_EMPTY_NODE;
     uint32_t numVars = 0;
 };
 

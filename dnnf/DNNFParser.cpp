@@ -243,7 +243,7 @@ DNNF parseDNNF(std::istream& input)
 
     for (const DNNFNode& node : dnnf.nodes) {
         if (hasParent.find(node.id) == hasParent.end()) {
-            if (dnnf.root != EMPTY_NODE) {
+            if (dnnf.root != DNNF_EMPTY_NODE) {
                 throw std::runtime_error(
                     "DNNF must have exactly one root; found root candidates " +
                     std::to_string(dnnf.root) + " and " + std::to_string(node.id));
@@ -252,7 +252,7 @@ DNNF parseDNNF(std::istream& input)
         }
     }
 
-    if (dnnf.root == EMPTY_NODE) {
+    if (dnnf.root == DNNF_EMPTY_NODE) {
         throw std::runtime_error("DNNF has no root");
     }
 
