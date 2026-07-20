@@ -156,6 +156,60 @@ void assertThrowsInvalidArgument(Fn fn)
     assert(threw);
 }
 
+template <typename Fn>
+void assertThrowsOverflow(Fn fn)
+{
+    bool threw = false;
+    try {
+        fn();
+    } catch (const std::overflow_error&) {
+        threw = true;
+    }
+    assert(threw);
+}
+
+bool sameMonomialSet(const MonomialSet& left, const MonomialSet& right)
+{
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (const Monomial& monomial : left) {
+        if (!right.contains(monomial)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+CountCoreState makeRegenerationState(const PlusTimesProgram& P, std::uint64_t seed)
+{
+    CountCoreState st;
+    st.n = static_cast<std::size_t>(P.degree);
+    st.kappa = 1.0;
+    st.runSeed = seed;
+    st.p.resize(P.nodes.size(), 0.0);
+    st.pReady.resize(P.nodes.size(), false);
+    st.exactSupports.resize(P.nodes.size());
+    st.variableSets = computeVariableSets(P);
+    st.membershipMemo.resize(P.nodes.size());
+    st.effectiveHeights.resize(P.nodes.size(), -1);
+    return st;
+}
+
+void markExactSampleNode(
+    CountCoreState& st,
+    const PlusTimesProgram& P,
+    NodeId q,
+    double probability)
+{
+    Support support = enumerateSupportBounded(P, q, 100);
+    assert(support.has_value());
+    st.exactSupports[q] = std::move(support);
+    st.effectiveHeights[q] = 0;
+    st.p[q] = probability;
+    st.pReady[q] = true;
+}
+
 void testEnumerateSupportBounded()
 {
     const PlusTimesProgram P = makeTwoVarAdd();
@@ -227,6 +281,56 @@ void testAssertReadyForFPRAS()
     });
 }
 
+void testDeterministicSampleRegeneration()
+{
+    {
+        const PlusTimesProgram P = makeTwoVarProduct();
+        CountCoreState st = makeRegenerationState(P, 123456789);
+        markExactSampleNode(st, P, 0, 1.0);
+        markExactSampleNode(st, P, 1, 1.0);
+        st.effectiveHeights[2] = 1;
+        st.p[2] = 0.5;
+        st.pReady[2] = true;
+
+        const MonomialSet first = generateSample(P, P.root, 3, st);
+        const MonomialSet other = generateSample(P, P.root, 1, st);
+        (void)other;
+        const MonomialSet repeated = generateSample(P, P.root, 3, st);
+
+        assert(sameMonomialSet(first, repeated));
+    }
+
+    {
+        const PlusTimesProgram P = makeTwoVarAdd();
+        CountCoreState st = makeRegenerationState(P, 987654321);
+        markExactSampleNode(st, P, 0, 1.0);
+        markExactSampleNode(st, P, 1, 1.0);
+        st.effectiveHeights[2] = 1;
+        st.p[2] = 0.5;
+        st.pReady[2] = true;
+
+        const MonomialSet first = generateSample(P, P.root, 4, st);
+        const MonomialSet other = generateSample(P, P.root, 2, st);
+        (void)other;
+        const MonomialSet repeated = generateSample(P, P.root, 4, st);
+
+        assert(sameMonomialSet(first, repeated));
+    }
+}
+
+void testSampleCountOverflowFailsFast()
+{
+    assertThrowsOverflow([] {
+        countCoreWithSupportThreshold(
+            makeTwoVarProduct(),
+            std::numeric_limits<std::size_t>::max(),
+            2,
+            1,
+            1.0,
+            0);
+    });
+}
+
 void testCountCoreSamplingSmoke()
 {
     const int degree = 12;
@@ -262,6 +366,8 @@ int main()
     testRoundDown();
     testCounterExactSmallPrograms();
     testAssertReadyForFPRAS();
+    testDeterministicSampleRegeneration();
+    testSampleCountOverflowFailsFast();
     testCountCoreSamplingSmoke();
     return 0;
 }
