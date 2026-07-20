@@ -1,13 +1,14 @@
-https://github.com/crillab/d4
-o, for an OR node
-f, for a false leaf
-t, for a true leaf
-a, for an AND node 
+c Format reference: https://github.com/crillab/d4
 
-The second argument just after the type of node is its index.
+c o, for an OR node
+c f, for a false leaf
+c t, for a true leaf
+c a, for an AND node
 
-In the example the decision-DNNF representation has
-3 OR nodes (1, 2 and 3) and 1 true node (4).
+c The second argument just after the type of node is its index.
+
+c In the example the decision-DNNF representation has
+c 3 OR nodes (1, 2 and 3) and 1 true node (4).
 
 o 1 0
 o 2 0
@@ -19,5 +20,5 @@ t 4 0
 2 4 1 0
 1 2 0
 
-In the example, 3 4 -2 3 0 means that OR node of index 3 is connected to the
-true node of index 4 and the literals -2 and 3 are set to true.
+c In the example, 3 4 -2 3 0 means that OR node of index 3 is connected to the
+c true node of index 4 and the literals -2 and 3 are set to true.
