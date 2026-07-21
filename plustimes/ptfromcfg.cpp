@@ -109,10 +109,6 @@ PlusTimesProgram compileCFGToPlusTimes(const CFG& cfg, int n)
   program.root = dp[dpIndex(start, n, 0, n)];
 
   program = pruneReachableTopological(program);
-  if (program.root != EMPTY_NODE) {
-    program = depthReduceVSBR(program);
-  }
-
   return program;
 
 }

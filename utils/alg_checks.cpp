@@ -11,23 +11,6 @@ void requireReady(bool condition, const char* message)
     }
 }
 
-namespace {
-
-int ceilLog2Positive(int value)
-{
-    requireReady(value > 0, "degree must be positive");
-
-    int x = value - 1;
-    int result = 0;
-    while (x > 0) {
-        x >>= 1;
-        ++result;
-    }
-    return result;
-}
-
-} // namespace
-
 // Description: 
 //  Iterates through the plus,times tree and computes 
 //  the degree of all nodes inside it.
@@ -271,7 +254,6 @@ int rootHeightOrThrow(const PlusTimesProgram& P)
 //  - no sum has sum child
 //  - homogeneous tree 
 //  - multilinear 
-//  - height <= 3 * ceil(log(rootDeg))
 // Input: 
 //  PlusTimesProgram &P
 // Output:
@@ -279,8 +261,6 @@ int rootHeightOrThrow(const PlusTimesProgram& P)
 void assertReadyForFPRAS(const PlusTimesProgram& P)
 {
     const std::vector<int> degrees = computeDegreesOrThrow(P);
-    const int rootDegree = degrees[P.root];
-
     requireReady(isTopologicallyOrdered(P), "plus-times nodes are not topologically ordered");
     requireReady(noConstants(P), "plus-times program contains a constant-like node");
     requireReady(allProductsBinary(P), "multiplication plus-times node must have fan-in exactly 2");
@@ -288,7 +268,4 @@ void assertReadyForFPRAS(const PlusTimesProgram& P)
     requireReady(isHomogeneous(P, degrees), "plus-times program is not homogeneous");
     requireReady(isStructurallyMultilinear(P), "plus-times program is not structurally multilinear");
 
-    const int allowedHeight = rootDegree <= 1 ? 1 : 3 * ceilLog2Positive(rootDegree);
-    requireReady(rootHeightOrThrow(P) <= allowedHeight, "plus-times root exceeds the FPRAS height bound");
 }
-

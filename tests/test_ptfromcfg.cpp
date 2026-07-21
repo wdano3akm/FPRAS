@@ -74,21 +74,6 @@ PolyVarId varId(std::size_t terminalIndex, int offset, std::size_t numTerminals)
     return static_cast<PolyVarId>(static_cast<std::size_t>(offset) * numTerminals + terminalIndex);
 }
 
-uint32_t ceilLog2ForTest(uint32_t value)
-{
-    if (value <= 1) {
-        return 0;
-    }
-
-    --value;
-    uint32_t result = 0;
-    while (value > 0) {
-        value >>= 1;
-        ++result;
-    }
-    return result;
-}
-
 int assertWellFormedAndGetHeight(const PlusTimesProgram& program)
 {
     if (program.root == EMPTY_NODE) {
@@ -135,9 +120,14 @@ int assertWellFormedAndGetHeight(const PlusTimesProgram& program)
 
     assert(program.degree == program.nodes[program.root].degree);
     const int height = heights[program.root];
-    const int allowedHeight =
-        program.degree <= 1 ? 1 : static_cast<int>(3 * ceilLog2ForTest(program.degree));
-    assert(height <= allowedHeight);
+    for (const PTNode& node : program.nodes) {
+        if (node.kind != PTKind::Add) {
+            continue;
+        }
+        for (NodeId child : node.children) {
+            assert(program.nodes[child].kind != PTKind::Add);
+        }
+    }
     return height;
 }
 
@@ -369,7 +359,7 @@ void testLengthSplits()
     assertMatchesCykBruteforce(grammar, 3);
 }
 
-void testSkewRecursiveGrammarIsDepthReduced()
+void testSkewRecursiveGrammarUsesUnlikeKinForm()
 {
     const TerminalId a = 1;
     std::vector<NonterminalId> nonterminals;
@@ -386,7 +376,7 @@ void testSkewRecursiveGrammarIsDepthReduced()
 
     const CFG grammar = cfg(17, nonterminals, {a}, terminalRules, binaryRules);
     const PlusTimesProgram program = compileCFGToPlusTimes(grammar, 8);
-    const int height = assertWellFormedAndGetHeight(program);
+    assertWellFormedAndGetHeight(program);
 
     Monomial expected;
     for (int offset = 0; offset < 8; ++offset) {
@@ -394,7 +384,6 @@ void testSkewRecursiveGrammarIsDepthReduced()
     }
 
     assert((exactSupport(program) == Support{expected}));
-    assert(height <= static_cast<int>(3 * ceilLog2ForTest(8)));
     assertMatchesCykBruteforce(grammar, 8);
 }
 
@@ -409,7 +398,7 @@ int main()
     testAmbiguityDoesNotDuplicateWords();
     testOrderMatters();
     testLengthSplits();
-    testSkewRecursiveGrammarIsDepthReduced();
+    testSkewRecursiveGrammarUsesUnlikeKinForm();
 
     return 0;
 }

@@ -147,7 +147,6 @@ PlusTimesProgram compileDNNFtoPlusTimes(const DNNF& dnnf)
   program = pruneReachableTopological(program);
   if (program.root != EMPTY_NODE) {
     program.degree = program.nodes[program.root].degree;
-    program = depthReduceVSBR(program);
   }
   return program;
 }

@@ -13,7 +13,7 @@ void assertNear(double actual, double expected)
     assert(std::abs(actual - expected) <= tolerance);
 }
 
-double bruteRoundDown(std::size_t n, double kappa, int height, double v)
+double bruteRoundDown(std::size_t n, double kappa, int degree, double v)
 {
     if (!(v > 0.0)) {
         return 0.0;
@@ -23,7 +23,7 @@ double bruteRoundDown(std::size_t n, double kappa, int height, double v)
     }
 
     const std::size_t maxEll = static_cast<std::size_t>(1) << n;
-    const double factor = std::exp(kappa * std::ldexp(1.0, height));
+    const double factor = std::exp(kappa * degree);
     const double lowScale = 16.0 * n / factor;
     const double highScale = 16.0 * n * factor;
     double best = 0.0;
@@ -192,7 +192,6 @@ CountCoreState makeRegenerationState(const PlusTimesProgram& P, std::uint64_t se
     st.exactSupports.resize(P.nodes.size());
     st.variableSets = computeVariableSets(P);
     st.membershipMemo.resize(P.nodes.size());
-    st.effectiveHeights.resize(P.nodes.size(), -1);
     return st;
 }
 
@@ -205,7 +204,6 @@ void markExactSampleNode(
     Support support = enumerateSupportBounded(P, q, 100);
     assert(support.has_value());
     st.exactSupports[q] = std::move(support);
-    st.effectiveHeights[q] = 0;
     st.p[q] = probability;
     st.pReady[q] = true;
 }
@@ -227,34 +225,37 @@ void testRoundDown()
     CountCoreState st;
     st.n = 10;
     st.kappa = 0.01;
-    st.effectiveHeights = {2, 4};
+    PlusTimesProgram P;
+    P.nodes = {
+        PTNode{PTKind::Var, 2, 0, {}},
+        PTNode{PTKind::Var, 4, 1, {}}};
 
-    assert(roundDown(st, 0, 2.0) == 1.0);
-    assert(roundDown(st, 0, 0.0) == 0.0);
-    assert(roundDown(st, 0, -0.1) == 0.0);
+    assert(roundDown(P, st, 0, 2.0) == 1.0);
+    assert(roundDown(P, st, 0, 0.0) == 0.0);
+    assert(roundDown(P, st, 0, -0.1) == 0.0);
 
     const double exactGridValue =
-        (16.0 * st.n * std::exp(-st.kappa * std::ldexp(1.0, st.effectiveHeights[0]))) / 200.0;
-    const double rounded = roundDown(st, 0, exactGridValue);
-    const double expected = bruteRoundDown(st.n, st.kappa, st.effectiveHeights[0], exactGridValue);
+        (16.0 * st.n * std::exp(-st.kappa * P.nodes[0].degree)) / 200.0;
+    const double rounded = roundDown(P, st, 0, exactGridValue);
+    const double expected = bruteRoundDown(st.n, st.kappa, P.nodes[0].degree, exactGridValue);
     assert(rounded < exactGridValue);
     assertNear(rounded, expected);
 
-    bool foundHeightSensitiveValue = false;
+    bool foundDegreeSensitiveValue = false;
     for (std::size_t ell = 100; ell < 400; ++ell) {
         const double v =
-            (16.0 * st.n * std::exp(-st.kappa * std::ldexp(1.0, st.effectiveHeights[0]))) /
+            (16.0 * st.n * std::exp(-st.kappa * P.nodes[0].degree)) /
             static_cast<double>(ell);
-        const double h2 = roundDown(st, 0, v);
-        const double h4 = roundDown(st, 1, v);
-        if (std::abs(h2 - h4) > 1e-12) {
-            assertNear(h2, bruteRoundDown(st.n, st.kappa, st.effectiveHeights[0], v));
-            assertNear(h4, bruteRoundDown(st.n, st.kappa, st.effectiveHeights[1], v));
-            foundHeightSensitiveValue = true;
+        const double d2 = roundDown(P, st, 0, v);
+        const double d4 = roundDown(P, st, 1, v);
+        if (std::abs(d2 - d4) > 1e-12) {
+            assertNear(d2, bruteRoundDown(st.n, st.kappa, P.nodes[0].degree, v));
+            assertNear(d4, bruteRoundDown(st.n, st.kappa, P.nodes[1].degree, v));
+            foundDegreeSensitiveValue = true;
             break;
         }
     }
-    assert(foundHeightSensitiveValue);
+    assert(foundDegreeSensitiveValue);
 }
 
 void testCounterExactSmallPrograms()
@@ -273,12 +274,8 @@ void testAssertReadyForFPRAS()
     assertThrowsInvalidArgument([] {
         assertReadyForFPRAS(makeNestedAdd());
     });
-    assertThrowsInvalidArgument([] {
-        assertReadyForFPRAS(makeLeftDeepProduct(16));
-    });
-    assertThrowsInvalidArgument([] {
-        counter(makeLeftDeepProduct(16), 1.0, 0.5);
-    });
+    assertReadyForFPRAS(makeLeftDeepProduct(16));
+    assert(counter(makeLeftDeepProduct(16), 1.0, 0.5) == 1.0);
 }
 
 void testDeterministicSampleRegeneration()
@@ -288,7 +285,6 @@ void testDeterministicSampleRegeneration()
         CountCoreState st = makeRegenerationState(P, 123456789);
         markExactSampleNode(st, P, 0, 1.0);
         markExactSampleNode(st, P, 1, 1.0);
-        st.effectiveHeights[2] = 1;
         st.p[2] = 0.5;
         st.pReady[2] = true;
 
@@ -305,7 +301,6 @@ void testDeterministicSampleRegeneration()
         CountCoreState st = makeRegenerationState(P, 987654321);
         markExactSampleNode(st, P, 0, 1.0);
         markExactSampleNode(st, P, 1, 1.0);
-        st.effectiveHeights[2] = 1;
         st.p[2] = 0.5;
         st.pReady[2] = true;
 
@@ -348,7 +343,7 @@ void testCountCoreSamplingSmoke()
             4,
             8,
             1000000,
-            1.0,
+            0.1,
             64));
     }
 

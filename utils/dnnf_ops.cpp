@@ -303,7 +303,6 @@ DNNF smoothDNNF(const DNNF& input)
     DNNF result = input;
     DNNFBuilder builder(result);
 
-    /*
     // Definition 6(1): introduce a logically dead occurrence of every missing
     // polarity using l OR (not l AND false).
     const auto originalPolarities = collectPolarities(result);
@@ -321,8 +320,6 @@ DNNF smoothDNNF(const DNNF& input)
             throw std::logic_error("failed to locate DNNF literal selected for smoothing");
         }
     }
-    */
-
     // Definition 6(2): each OR branch receives A OR not A for every atom that
     // occurs in the OR but is absent from that branch.
     const GraphInfo info = inspectGraph(result);
@@ -357,4 +354,10 @@ DNNF smoothDNNF(const DNNF& input)
         throw std::logic_error("internal error: DNNF smoothing did not produce a smooth DNNF");
     }
     return result;
+}
+
+DNNF smooth_DNNF(DNNF& dnnf)
+{
+    dnnf = smoothDNNF(dnnf);
+    return dnnf;
 }
