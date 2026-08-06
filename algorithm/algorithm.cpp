@@ -21,6 +21,10 @@
 
 using boost::multiprecision::cpp_int;
 
+// Enumerate at most this many support elements per unit of program degree
+// before switching to randomized counting. A value of 1 caps the threshold at n.
+constexpr std::size_t supportThresholdPerDegree = 16;
+
 // A monomial is a vector of variables 
 // whose order does not matter
 // Every monomial is assumed to be homogeneous. Therefore
@@ -1000,6 +1004,14 @@ void estimateSamplePlus(
 
 std::size_t checkedMultiply(std::size_t left, std::size_t right, const char* name);
 
+std::size_t supportThreshold(const PlusTimesProgram& P)
+{
+    return checkedMultiply(
+        supportThresholdPerDegree,
+        static_cast<std::size_t>(P.degree),
+        "support threshold overflows size_t");
+}
+
 double countCoreWithSupportThreshold(
     const PlusTimesProgram& P,
     std::size_t ns,
@@ -1112,14 +1124,7 @@ double countCore(
     cpp_int theta,
     double kappa
 ) {
-    const std::size_t n = static_cast<std::size_t>(P.degree);
-    const std::size_t Psize = P.nodes.size();
-    const std::size_t threshold =
-      checkedMultiply(
-        checkedMultiply(checkedMultiply(16, n, "support threshold overflows size_t"), Psize, "support threshold overflows size_t"),
-        Psize,
-        "support threshold overflows size_t");
-    return countCoreWithSupportThreshold(P, ns, nt, theta, kappa, threshold);
+    return countCoreWithSupportThreshold(P, ns, nt, theta, kappa, supportThreshold(P));
 }
 
 std::size_t ceilToSize(double value, const char* name)
@@ -1154,11 +1159,7 @@ double counter(const PlusTimesProgram& P, double epsilon, double delta)
 
     const std::size_t n = static_cast<std::size_t>(P.degree);
     const std::size_t Psize = P.nodes.size();
-    const std::size_t exactThreshold =
-      checkedMultiply(
-        checkedMultiply(checkedMultiply(16, n, "support threshold overflows size_t"), Psize, "support threshold overflows size_t"),
-        Psize,
-        "support threshold overflows size_t");
+    const std::size_t exactThreshold = supportThreshold(P);
     if (exactThreshold < std::numeric_limits<std::size_t>::max()) {
         if (exactThreshold >= 1000) {
             std::cerr << "counter: checking exact root support up to "

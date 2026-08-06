@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+#PBS -q normal
+#PBS -N cfgfpras_instances
+#PBS -l select=1:ncpus=1:mem=32gb
+#PBS -l walltime=02:00:00
+#PBS -j oe
+#PBS -P <project-id>
+
+# Run every .nnf and .cfg file below an instances directory. The conservative
+# default profiles them serially because large generated NNFs can need much more
+# memory than their source CNFs suggest. Before submitting, replace <project-id>.
+#
+# Optional qsub overrides:
+#   qsub -v INSTANCES_DIR=/path/to/instances,CFG_LENGTH=10 scripts/run_instances.pbs
+# Resource directives can be overridden with qsub -l, for example:
+#   qsub -l select=1:ncpus=4:mem=64gb -l walltime=04:00:00 scripts/run_instances.pbs
+# MAX_WORKERS can cap concurrency below PBS_NCPUS when memory is the bottleneck.
+
+set -uo pipefail
+
+repo_root=${PBS_O_WORKDIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
+cd "$repo_root" || exit 1
+
+instances_dir=${INSTANCES_DIR:-instances}
+cfg_length=${CFG_LENGTH:-3}
+results_dir=${RESULTS_DIR:-results/${PBS_JOBID:-local-$(date +%Y%m%d-%H%M%S)}}
+allocated_cpus=${PBS_NCPUS:-1}
+workers=${MAX_WORKERS:-$allocated_cpus}
+
+if [[ ! -d $instances_dir ]]; then
+    echo "error: instances directory does not exist: $instances_dir" >&2
+    exit 1
+fi
+if [[ ! $cfg_length =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: CFG_LENGTH must be a positive integer" >&2
+    exit 1
+fi
+if [[ ! $allocated_cpus =~ ^[1-9][0-9]*$ || ! $workers =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: PBS_NCPUS and MAX_WORKERS must be positive integers" >&2
+    exit 1
+fi
+if (( workers > allocated_cpus )); then
+    echo "error: MAX_WORKERS ($workers) exceeds allocated PBS_NCPUS ($allocated_cpus)" >&2
+    exit 1
+fi
+
+mkdir -p "$results_dir/logs" "$results_dir/timing"
+
+echo "Building executable on $(hostname)"
+make build/main || exit 1
+
+mapfile -d '' inputs < <(
+    find "$instances_dir" -type f \( -iname '*.nnf' -o -iname '*.cfg' \) -print0 |
+        sort -z
+)
+if (( ${#inputs[@]} == 0 )); then
+    echo "error: no .nnf or .cfg files found below $instances_dir" >&2
+    exit 1
+fi
+
+printf '%s\n' \
+    "job=${PBS_JOBID:-local}" \
+    "host=$(hostname)" \
+    "started=$(date --iso-8601=seconds)" \
+    "allocated_cpus=$allocated_cpus" \
+    "workers=$workers" \
+    "instances=${#inputs[@]}" \
+    "cfg_length=$cfg_length" \
+    "instances_dir=$instances_dir" > "$results_dir/job-info.txt"
+
+export repo_root instances_dir results_dir cfg_length
+run_one() {
+    local input=$1 relative stem log timing raw_timing status start end elapsed
+    relative=${input#"$instances_dir"/}
+    # Retain subdirectory information while making a flat, collision-free name.
+    stem=${relative//\//__}
+    log=$results_dir/logs/$stem.log
+    timing=$results_dir/timing/$stem.tsv
+    raw_timing=$timing.raw
+
+    printf 'input\telapsed_seconds\tmax_rss_kb\texit_status\n' > "$timing"
+    if [[ -x /usr/bin/time ]]; then
+        if [[ ${input,,} == *.cfg ]]; then
+            /usr/bin/time -o "$raw_timing" -f '%e\t%M\t%x' \
+                "$repo_root/build/main" "$input" "$cfg_length" > "$log" 2>&1
+            status=$?
+        else
+            /usr/bin/time -o "$raw_timing" -f '%e\t%M\t%x' \
+                "$repo_root/build/main" "$input" > "$log" 2>&1
+            status=$?
+        fi
+        printf '%s\t' "$relative" >> "$timing"
+        cat "$raw_timing" >> "$timing"
+        rm -f "$raw_timing"
+    else
+        start=$(date +%s)
+        if [[ ${input,,} == *.cfg ]]; then
+            "$repo_root/build/main" "$input" "$cfg_length" > "$log" 2>&1
+            status=$?
+        else
+            "$repo_root/build/main" "$input" > "$log" 2>&1
+            status=$?
+        fi
+        end=$(date +%s)
+        elapsed=$((end - start))
+        printf '%s\t%s\tNA\t%s\n' "$relative" "$elapsed" "$status" >> "$timing"
+    fi
+    return "$status"
+}
+export -f run_one
+
+echo "Running ${#inputs[@]} instances with $workers concurrent workers"
+printf '%s\0' "${inputs[@]}" |
+    xargs -0 -r -n 1 -P "$workers" bash -c 'run_one "$1"' _
+farm_status=$?
+
+summary=$results_dir/summary.tsv
+printf 'input\telapsed_seconds\tmax_rss_kb\texit_status\n' > "$summary"
+for timing in "$results_dir"/timing/*.tsv; do
+    sed -n '2p' "$timing" >> "$summary"
+done
+
+failed=$(awk -F '\t' 'NR > 1 && $4 != 0 { count++ } END { print count + 0 }' "$summary")
+printf 'finished=%s\nfailed=%s\n' "$(date --iso-8601=seconds)" "$failed" \
+    >> "$results_dir/job-info.txt"
+echo "Finished; failures=$failed; summary=$summary"
+
+if (( farm_status != 0 || failed != 0 )); then
+    exit 1
+fi

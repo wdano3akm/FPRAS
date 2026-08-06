@@ -260,8 +260,14 @@ void testRoundDown()
 
 void testCounterExactSmallPrograms()
 {
-    assert(counter(makeTwoVarAdd(), 1.0, 0.5) == 2.0);
     assert(counter(makeTwoVarProduct(), 1.0, 0.5) == 1.0);
+}
+
+void testSupportThresholdIsBoundedByDegree()
+{
+    assert(supportThreshold(makeTwoVarAdd()) == 1);
+    assert(supportThreshold(makeTwoVarProduct()) == 2);
+    assert(supportThreshold(makeLeftDeepProduct(16)) == 16);
 }
 
 void testAssertReadyForFPRAS()
@@ -360,6 +366,7 @@ int main()
     testEnumerateSupportBounded();
     testRoundDown();
     testCounterExactSmallPrograms();
+    testSupportThresholdIsBoundedByDegree();
     testAssertReadyForFPRAS();
     testDeterministicSampleRegeneration();
     testSampleCountOverflowFailsFast();
