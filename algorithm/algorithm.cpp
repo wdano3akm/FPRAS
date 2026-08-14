@@ -10,6 +10,7 @@
 #include <random>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <optional>
 #include <unordered_set>
@@ -17,13 +18,15 @@
 #include <boost/multiprecision/cpp_int.hpp>
 #include <iostream>
 
-#define DEBUG
-
 using boost::multiprecision::cpp_int;
 
-// Enumerate at most this many support elements per unit of program degree
-// before switching to randomized counting. A value of 1 caps the threshold at n.
-constexpr std::size_t supportThresholdPerDegree = 16;
+constexpr std::size_t supportThresholdFactor = 16;
+constexpr std::size_t minimumRandomizedDegree = 16;
+
+bool theoremAllowsRandomizedCounting(std::size_t degree)
+{
+    return degree >= minimumRandomizedDegree;
+}
 
 // A monomial is a vector of variables 
 // whose order does not matter
@@ -36,6 +39,16 @@ struct Monomial {
         return vars == other.vars;
     }
 };
+
+bool monomialLess(const Monomial& left, const Monomial& right)
+{
+    return left.vars < right.vars;
+}
+
+void canonicalizeSupport(std::vector<Monomial>& support)
+{
+    std::sort(support.begin(), support.end(), monomialLess);
+}
 
 // Compute an hash for every Monomial using
 // the variables contained inside it
@@ -88,6 +101,129 @@ struct CountCoreState {
     VariableSets variableSets;
     SupportMembershipMemo membershipMemo;
 };
+
+class SampleMemo {
+public:
+    explicit SampleMemo(std::size_t nodeCount)
+        : entries_(nodeCount)
+    {
+        touched_.reserve(nodeCount);
+    }
+
+    void beginSample(std::size_t sample)
+    {
+        for (NodeId node : touched_) {
+            entries_[node].reset();
+        }
+        touched_.clear();
+        sample_ = sample;
+        active_ = true;
+    }
+
+    const MonomialSet* find(NodeId node, std::size_t sample)
+    {
+        requireCurrentSample(sample);
+        if (!entries_[node].has_value()) {
+            return nullptr;
+        }
+        ++hitCount_;
+        return &*entries_[node];
+    }
+
+    const MonomialSet& store(NodeId node, std::size_t sample, MonomialSet value)
+    {
+        requireCurrentSample(sample);
+        if (entries_[node].has_value()) {
+            throw std::logic_error("sample memo entry stored twice");
+        }
+        entries_[node].emplace(std::move(value));
+        touched_.push_back(node);
+        return *entries_[node];
+    }
+
+    std::size_t hitCount() const
+    {
+        return hitCount_;
+    }
+
+private:
+    void requireCurrentSample(std::size_t sample) const
+    {
+        if (!active_ || sample != sample_) {
+            throw std::logic_error("sample memo used with the wrong sample index");
+        }
+    }
+
+    std::vector<std::optional<MonomialSet>> entries_;
+    std::vector<NodeId> touched_;
+    std::size_t sample_ = 0;
+    std::size_t hitCount_ = 0;
+    bool active_ = false;
+};
+
+class SampleSizeThreshold {
+public:
+    explicit SampleSizeThreshold(const cpp_int& theta)
+    {
+        if (theta <= 0) {
+            zeroAlwaysReaches_ = true;
+            reachable_ = true;
+            value_ = 0;
+            return;
+        }
+
+        const cpp_int maxSize = std::numeric_limits<std::size_t>::max();
+        if (theta > maxSize) {
+            return;
+        }
+        reachable_ = true;
+        value_ = theta.convert_to<std::size_t>();
+    }
+
+    bool reached(std::size_t size) const
+    {
+        return reachable_ && size >= value_;
+    }
+
+    bool zeroAlwaysReaches() const
+    {
+        return zeroAlwaysReaches_;
+    }
+
+private:
+    std::size_t value_ = 0;
+    bool reachable_ = false;
+    bool zeroAlwaysReaches_ = false;
+};
+
+enum class ExactThetaDecision {
+    Safe,
+    Fail,
+    CheckSamples,
+};
+
+ExactThetaDecision exactThetaDecision(
+    std::size_t supportSize,
+    double probability,
+    const SampleSizeThreshold& theta,
+    std::size_t sampleCount)
+{
+    if (sampleCount == 0) {
+        return ExactThetaDecision::Safe;
+    }
+    if (probability <= 0.0) {
+        return theta.zeroAlwaysReaches()
+            ? ExactThetaDecision::Fail
+            : ExactThetaDecision::Safe;
+    }
+    if (!theta.reached(supportSize)) {
+        return ExactThetaDecision::Safe;
+    }
+    if (probability >= 1.0) {
+        return ExactThetaDecision::Fail;
+    }
+    return ExactThetaDecision::CheckSamples;
+}
 
 // Description:
 //  Checked power of two function
@@ -437,16 +573,24 @@ void hashCombine64(std::uint64_t& seed, std::uint64_t value)
     seed ^= mix64(value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2));
 }
 
-std::uint64_t hashSampleDecision(
+std::uint64_t hashSampleKeyState(
     std::uint64_t runSeed,
-    const SampleKey& key,
-    const Monomial& monomial)
+    const SampleKey& key)
 {
     std::uint64_t seed = mix64(runSeed);
     hashCombine64(seed, static_cast<std::uint64_t>(key.node));
     hashCombine64(seed, static_cast<std::uint64_t>(key.sample));
     hashCombine64(seed, static_cast<std::uint64_t>(key.stage));
     hashCombine64(seed, static_cast<std::uint64_t>(key.ordinal));
+    return seed;
+}
+
+std::uint64_t hashSampleDecision(
+    std::uint64_t runSeed,
+    const SampleKey& key,
+    const Monomial& monomial)
+{
+    std::uint64_t seed = hashSampleKeyState(runSeed, key);
     hashCombine64(seed, static_cast<std::uint64_t>(monomial.vars.size()));
     for (VarId var : monomial.vars) {
         hashCombine64(seed, static_cast<std::uint64_t>(var));
@@ -471,6 +615,111 @@ bool keepWithKey(
     const double unit =
         static_cast<double>(bits >> 11) * (1.0 / 9007199254740992.0);
     return unit < p;
+}
+
+class DeterministicUniformStream {
+public:
+    DeterministicUniformStream(std::uint64_t runSeed, const SampleKey& key)
+        : seed_(mix64(hashSampleKeyState(runSeed, key)))
+    {
+    }
+
+    long double nextOpenUnit()
+    {
+        if (counter_ == std::numeric_limits<std::uint64_t>::max()) {
+            throw std::overflow_error("deterministic sample stream exhausted");
+        }
+        const std::uint64_t bits = mix64(
+            seed_ + 0x9e3779b97f4a7c15ULL * (++counter_));
+        const std::uint64_t mantissa = bits >> 11;
+        constexpr long double unitCount = 9007199254740992.0L;
+        return (static_cast<long double>(mantissa) + 1.0L) / (unitCount + 1.0L);
+    }
+
+private:
+    std::uint64_t seed_ = 0;
+    std::uint64_t counter_ = 0;
+};
+
+class GeometricIndexGenerator {
+public:
+    GeometricIndexGenerator(
+        std::size_t count,
+        double probability,
+        std::uint64_t runSeed,
+        const SampleKey& key)
+        : count_(count),
+          stream_(runSeed, key)
+    {
+        if (count == 0 || !std::isfinite(probability) || !(probability > 0.0)) {
+            mode_ = Mode::Empty;
+        } else if (probability >= 1.0) {
+            mode_ = Mode::All;
+        } else {
+            mode_ = Mode::Sparse;
+            logFailureProbability_ = std::log1p(-static_cast<long double>(probability));
+        }
+    }
+
+    std::optional<std::size_t> next()
+    {
+        if (nextCandidate_ >= count_ || mode_ == Mode::Empty) {
+            return std::nullopt;
+        }
+        if (mode_ == Mode::All) {
+            return nextCandidate_++;
+        }
+
+        const long double unit = stream_.nextOpenUnit();
+        ++uniformDraws_;
+        const long double gap = std::floor(std::log(unit) / logFailureProbability_);
+        const std::size_t remaining = count_ - nextCandidate_;
+        if (!std::isfinite(gap) || gap < 0.0L || gap >= static_cast<long double>(remaining)) {
+            nextCandidate_ = count_;
+            return std::nullopt;
+        }
+
+        const std::size_t index = nextCandidate_ + static_cast<std::size_t>(gap);
+        nextCandidate_ = index + 1;
+        return index;
+    }
+
+    std::size_t uniformDraws() const
+    {
+        return uniformDraws_;
+    }
+
+private:
+    enum class Mode {
+        Empty,
+        All,
+        Sparse,
+    };
+
+    std::size_t count_ = 0;
+    std::size_t nextCandidate_ = 0;
+    std::size_t uniformDraws_ = 0;
+    long double logFailureProbability_ = 0.0L;
+    Mode mode_ = Mode::Empty;
+    DeterministicUniformStream stream_;
+};
+
+MonomialSet reduceExactSupportSparse(
+    const std::vector<Monomial>& monomials,
+    double probability,
+    const CountCoreState& st,
+    const SampleKey& key)
+{
+    MonomialSet result;
+    GeometricIndexGenerator generator(
+        monomials.size(),
+        probability,
+        st.runSeed,
+        key);
+    while (const std::optional<std::size_t> index = generator.next()) {
+        result.insert(monomials[*index]);
+    }
+    return result;
 }
 
 MonomialSet reduceDeterministic(
@@ -840,18 +1089,20 @@ double childMinimumProbability(const PlusTimesProgram& P, NodeId q, const CountC
     return rho;
 }
 
-MonomialSet generateSample(
+const MonomialSet& generateSampleMemoized(
     const PlusTimesProgram& P,
     NodeId q,
     std::size_t r,
-    CountCoreState& st);
+    CountCoreState& st,
+    SampleMemo& memo);
 
 MonomialSet generatePlusHat(
     const PlusTimesProgram& P,
     NodeId q,
     std::size_t r,
     double rho,
-    CountCoreState& st)
+    CountCoreState& st,
+    SampleMemo& memo)
 {
     if (q == EMPTY_NODE || q >= P.nodes.size()) {
         throw std::logic_error("invalid plus-times node id during sample regeneration");
@@ -865,9 +1116,8 @@ MonomialSet generatePlusHat(
         const NodeId child = children[i];
         requireSampleReady(st, child);
         const double reduceProbability = st.p[child] > 0.0 ? rho / st.p[child] : 0.0;
-        MonomialSet childSample = generateSample(P, child, r, st);
         reducedChildren.push_back(reduceDeterministic(
-            childSample,
+            generateSampleMemoized(P, child, r, st, memo),
             reduceProbability,
             st,
             SampleKey{q, r, SampleStage::PlusChildReduce, i}));
@@ -876,23 +1126,27 @@ MonomialSet generatePlusHat(
     return sampleUnion(P, children, reducedChildren, st.variableSets, st.membershipMemo);
 }
 
-MonomialSet generateSample(
+const MonomialSet& generateSampleMemoized(
     const PlusTimesProgram& P,
     NodeId q,
     std::size_t r,
-    CountCoreState& st)
+    CountCoreState& st,
+    SampleMemo& memo)
 {
     if (q == EMPTY_NODE || q >= P.nodes.size()) {
         throw std::logic_error("invalid plus-times node id during sample regeneration");
     }
     requireSampleReady(st, q);
+    if (const MonomialSet* cached = memo.find(q, r)) {
+        return *cached;
+    }
 
     if (st.exactSupports[q].has_value()) {
-        return reduceDeterministic(
+        return memo.store(q, r, reduceExactSupportSparse(
             *st.exactSupports[q],
             st.p[q],
             st,
-            SampleKey{q, r, SampleStage::ExactSupport, 0});
+            SampleKey{q, r, SampleStage::ExactSupport, 0}));
     }
 
     const PTNode& node = P.nodes[q];
@@ -903,30 +1157,41 @@ MonomialSet generateSample(
         requireSampleReady(st, left);
         requireSampleReady(st, right);
 
-        MonomialSet leftSample = generateSample(P, left, r, st);
-        MonomialSet rightSample = generateSample(P, right, r, st);
+        const MonomialSet& leftSample = generateSampleMemoized(P, left, r, st, memo);
+        const MonomialSet& rightSample = generateSampleMemoized(P, right, r, st, memo);
         const double denominator = st.p[left] * st.p[right];
         const double reduceProbability =
             denominator > 0.0 ? st.p[q] / denominator : 0.0;
-        return reduceDeterministic(
+        return memo.store(q, r, reduceDeterministic(
             cross(leftSample, rightSample),
             reduceProbability,
             st,
-            SampleKey{q, r, SampleStage::MulFinal, 0});
+            SampleKey{q, r, SampleStage::MulFinal, 0}));
     }
 
     if (node.kind == PTKind::Add) {
         const double rho = childMinimumProbability(P, q, st);
-        MonomialSet shat = generatePlusHat(P, q, r, rho, st);
+        MonomialSet shat = generatePlusHat(P, q, r, rho, st, memo);
         const double reduceProbability = rho > 0.0 ? st.p[q] / rho : 0.0;
-        return reduceDeterministic(
+        return memo.store(q, r, reduceDeterministic(
             shat,
             reduceProbability,
             st,
-            SampleKey{q, r, SampleStage::PlusFinal, 0});
+            SampleKey{q, r, SampleStage::PlusFinal, 0}));
     }
 
     throw std::logic_error("large leaf support should be impossible");
+}
+
+MonomialSet generateSample(
+    const PlusTimesProgram& P,
+    NodeId q,
+    std::size_t r,
+    CountCoreState& st)
+{
+    SampleMemo memo(P.nodes.size());
+    memo.beginSample(r);
+    return generateSampleMemoized(P, q, r, st, memo);
 }
 
 // Description
@@ -966,7 +1231,11 @@ void estimateSampleTimes(
 
 // Description
 //  esimator of the samples when union is performed 
-void estimateSamplePlus(
+struct PlusEstimateResult {
+    bool needsFinalThetaPass = true;
+};
+
+PlusEstimateResult estimateSamplePlus(
     const PlusTimesProgram &P,
     NodeId q,
     CountCoreState& st,
@@ -974,7 +1243,8 @@ void estimateSamplePlus(
     std::size_t ns,
     std::size_t nt,
     std::size_t m,
-    bool verbose)
+    bool verbose,
+    const SampleSizeThreshold& theta)
 {
   const auto& children = P.nodes[q].children;
   assert(!children.empty());
@@ -984,12 +1254,18 @@ void estimateSamplePlus(
   std::vector<double> blockMeans;
   blockMeans.reserve(nt);
   MissingProgress progress("plus estimate", q, m, verbose);
+  SampleMemo sampleMemo(P.nodes.size());
+  bool sawPotentialThetaViolation = false;
   std::size_t processed = 0;
   for (std::size_t j = 0; j < nt; ++j) {
     double sampleSum = 0.0;
     for (std::size_t offset = 0; offset < ns; ++offset) {
         const std::size_t r = j * ns + offset;
-        sampleSum += static_cast<double>(generatePlusHat(P, q, r, rho, st).size());
+        sampleMemo.beginSample(r);
+        MonomialSet shat = generatePlusHat(P, q, r, rho, st, sampleMemo);
+        sampleSum += static_cast<double>(shat.size());
+        sawPotentialThetaViolation =
+            sawPotentialThetaViolation || theta.reached(shat.size());
         ++processed;
         progress.update(processed);
     }
@@ -1000,16 +1276,28 @@ void estimateSamplePlus(
   const double medianMean = median(blockMeans);
   const double rhoHat = medianMean > 0.0 ? (16.0 * n) / medianMean : rho;
   st.p[q] = roundDown(P, st, q, std::min(rho, rhoHat));
+  const bool finalSamplesAreEmpty = st.p[q] <= 0.0 && !theta.zeroAlwaysReaches();
+  return PlusEstimateResult{sawPotentialThetaViolation && !finalSamplesAreEmpty};
 }
 
 std::size_t checkedMultiply(std::size_t left, std::size_t right, const char* name);
 
-std::size_t supportThreshold(const PlusTimesProgram& P)
+std::size_t supportThresholdFor(std::size_t n, std::size_t programSize)
 {
     return checkedMultiply(
-        supportThresholdPerDegree,
-        static_cast<std::size_t>(P.degree),
+        checkedMultiply(
+            checkedMultiply(supportThresholdFactor, n, "support threshold overflows size_t"),
+            programSize,
+            "support threshold overflows size_t"),
+        programSize,
         "support threshold overflows size_t");
+}
+
+std::size_t supportThreshold(const PlusTimesProgram& P)
+{
+    return supportThresholdFor(
+        static_cast<std::size_t>(P.degree),
+        P.nodes.size());
 }
 
 double countCoreWithSupportThreshold(
@@ -1023,6 +1311,7 @@ double countCoreWithSupportThreshold(
     const NodeId o = P.root;
     const std::size_t n = static_cast<std::size_t>(P.degree);
     const std::size_t m = checkedMultiply(ns, nt, "sample count overflows size_t");
+    const SampleSizeThreshold sampleSizeThreshold(theta);
     const std::size_t enumerationThreshold =
         supportThreshold == std::numeric_limits<std::size_t>::max()
             ? supportThreshold
@@ -1064,6 +1353,7 @@ double countCoreWithSupportThreshold(
     for (std::size_t qi = 0; qi < order.size(); ++qi) {
         const NodeId q = order[qi];
         const PTNode& node = P.nodes[q];
+        bool needsFinalThetaPass = true;
         if (verbose) {
             std::cerr << "node " << (qi + 1) << "/" << order.size()
                       << " id " << q << " (" << nodeKindName(node)
@@ -1074,6 +1364,7 @@ double countCoreWithSupportThreshold(
         auto supp = enumerateSupportBounded(P, q, enumerationThreshold);
 
         if (supp.has_value()) {
+            canonicalizeSupport(*supp);
             st.p[q] = supp->empty() ? 0.0 : std::min(1.0, (16.0 * n) / supp->size());
             if (verbose) {
                 std::cerr << "node " << q << ": exact support size "
@@ -1081,6 +1372,15 @@ double countCoreWithSupportThreshold(
             }
             st.exactSupports[q] = std::move(supp);
             st.pReady[q] = true;
+            const ExactThetaDecision thetaDecision = exactThetaDecision(
+                st.exactSupports[q]->size(),
+                st.p[q],
+                sampleSizeThreshold,
+                m);
+            if (thetaDecision == ExactThetaDecision::Fail) {
+                return 0.0;
+            }
+            needsFinalThetaPass = thetaDecision == ExactThetaDecision::CheckSamples;
         } else {
             if (verbose) {
                 std::cerr << "node " << q << ": support is larger than threshold; estimating "
@@ -1090,8 +1390,18 @@ double countCoreWithSupportThreshold(
                 estimateSampleTimes(P, q, st, n);
                 st.pReady[q] = true;
             } else if (isPlus(P.nodes[q])) {
-                estimateSamplePlus(P, q, st, n, ns, nt, m, verbose);
+                const PlusEstimateResult plusResult = estimateSamplePlus(
+                    P,
+                    q,
+                    st,
+                    n,
+                    ns,
+                    nt,
+                    m,
+                    verbose,
+                    sampleSizeThreshold);
                 st.pReady[q] = true;
+                needsFinalThetaPass = plusResult.needsFinalThetaPass;
             } else {
                 throw std::runtime_error("large leaf support should be impossible");
             }
@@ -1101,12 +1411,24 @@ double countCoreWithSupportThreshold(
             }
         }
 
+        if (!needsFinalThetaPass) {
+            if (verbose) {
+                std::cerr << "node " << q
+                          << ": final samples are provably below theta; skipping regeneration"
+                          << std::endl;
+            }
+            continue;
+        }
+
         if (verbose) {
             std::cerr << "node " << q << ": checking final samples against theta" << std::endl;
         }
         MissingProgress progress("theta check", q, m, verbose);
+        SampleMemo sampleMemo(P.nodes.size());
         for (std::size_t r = 0; r < m; ++r) {
-            if (cpp_int(generateSample(P, q, r, st).size()) >= theta) {
+            sampleMemo.beginSample(r);
+            if (sampleSizeThreshold.reached(
+                    generateSampleMemoized(P, q, r, st, sampleMemo).size())) {
                 return 0.0;
             }
             progress.update(r + 1);
@@ -1175,10 +1497,20 @@ double counter(const PlusTimesProgram& P, double epsilon, double delta)
             }
             return static_cast<double>(*exactSupportSize);
         }
-        if (exactThreshold >= 1000) {
-            std::cerr << "counter: exact root support exceeds threshold; starting countCore repetitions"
-                      << std::endl;
+    }
+    if (!theoremAllowsRandomizedCounting(n)) {
+        std::optional<std::size_t> exactSupportSize = supportSizeBounded(
+            P,
+            P.root,
+            std::numeric_limits<std::size_t>::max());
+        if (!exactSupportSize.has_value()) {
+            throw std::overflow_error("exact support size overflows size_t");
         }
+        return static_cast<double>(*exactSupportSize);
+    }
+    if (exactThreshold >= 1000) {
+        std::cerr << "counter: exact root support exceeds threshold; starting countCore repetitions"
+                  << std::endl;
     }
 #ifdef DEBUG
     const double epsilonPrime = std::min(epsilon, 1.);
@@ -1186,8 +1518,14 @@ double counter(const PlusTimesProgram& P, double epsilon, double delta)
     const double epsilonPrime = std::min(epsilon, 0.25);
 #endif
     const double kappa = epsilonPrime / (4.0 * static_cast<double>(n));
+
+#ifdef TESTING 
+    const std::size_t ns = 4;
+    const std::size_t nt = 8;
+#else
     const std::size_t ns = ceilToSize(48.0 / (kappa * kappa), "ns overflows size_t");
     const std::size_t nt = checkedMultiply(checkedMultiply(8, n, "nt overflows size_t"), Psize, "nt overflows size_t");
+#endif
     /*
     const std::size_t theta = checkedMultiply(
         checkedMultiply(checkedMultiply(checkedMultiply(512, ns, "theta overflows size_t"), nt, "theta overflows size_t"), n, "theta overflows size_t"),

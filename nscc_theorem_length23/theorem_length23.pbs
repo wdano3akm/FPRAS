@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+#PBS -q normal
+#PBS -N cfg_theorem_l23
+#PBS -l select=1:ncpus=1:mem=32gb
+#PBS -l walltime=10:00:00
+#PBS -j oe
+#PBS -P <project-id>
+
+# Submit this file from the repository root after replacing <project-id>:
+#   qsub nscc_theorem_length23/theorem_length23.pbs
+#
+# PBS_O_WORKDIR is the directory from which qsub was invoked. REPO_DIR can be
+# supplied as an absolute path if the job is submitted from somewhere else:
+#   qsub -v REPO_DIR=/path/to/cfgfpras nscc_theorem_length23/theorem_length23.pbs
+
+set -euo pipefail
+
+repo_root=${REPO_DIR:-${PBS_O_WORKDIR:?PBS_O_WORKDIR is not set}}
+input=tests/fixtures/randomized_theorem.cfg
+length=23
+executable=build/main-O3
+job_id=${PBS_JOBID:-local}
+results_dir=nscc_theorem_length23/results/$job_id
+
+cd "$repo_root"
+
+if [[ ! -f Makefile || ! -f $input ]]; then
+    echo "error: repository or input not found under: $repo_root" >&2
+    echo "submit from the repository root, or set REPO_DIR to its absolute path" >&2
+    exit 1
+fi
+
+# NSCC's GNU programming environment provides g++ as documented for ASPIRE 2A.
+if command -v module >/dev/null 2>&1; then
+    module swap PrgEnv-cray PrgEnv-gnu 2>/dev/null || true
+fi
+if ! command -v g++ >/dev/null 2>&1; then
+    echo "error: g++ is unavailable; load NSCC's PrgEnv-gnu module" >&2
+    exit 1
+fi
+
+mkdir -p "$results_dir"
+
+echo "job: $job_id"
+echo "host: $(hostname)"
+echo "repository: $repo_root"
+echo "started: $(date --iso-8601=seconds)"
+echo "compiler: $(g++ --version | head -n 1)"
+echo "building: $executable"
+
+# Force a local optimized rebuild instead of reusing a binary copied from a
+# different machine or produced from an older source tree.
+make -B optimized OPT_LEVEL=3
+
+echo "running: $executable $input $length"
+set +e
+if [[ -x /usr/bin/time ]]; then
+    /usr/bin/time -v -o "$results_dir/time.txt" \
+        "$executable" "$input" "$length" \
+        > "$results_dir/stdout.txt" \
+        2> "$results_dir/stderr.txt"
+    status=$?
+else
+    "$executable" "$input" "$length" \
+        > "$results_dir/stdout.txt" \
+        2> "$results_dir/stderr.txt"
+    status=$?
+fi
+set -e
+
+printf '%s\n' \
+    "job=$job_id" \
+    "host=$(hostname)" \
+    "input=$input" \
+    "length=$length" \
+    "finished=$(date --iso-8601=seconds)" \
+    "exit_status=$status" > "$results_dir/job-info.txt"
+
+echo "finished with exit status $status"
+echo "results: $repo_root/$results_dir"
+exit "$status"

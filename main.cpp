@@ -6,6 +6,7 @@
 #include "utils/dnnf_ops.hpp"
 
 #include <algorithm>
+#include<cmath>
 #include <cctype>
 #include <filesystem>
 #include <iostream>
@@ -23,7 +24,15 @@ double runCFG(const std::string& path, int length)
 {
     const CFG cfg = parseCFG(path);
     const PlusTimesProgram program = compileCFGToPlusTimes(cfg, length);
-    return counter(program, epsilon, delta);
+
+    const std::size_t Psize = program.nodes.size();
+    const std::size_t n = static_cast<std::size_t>(program.degree);
+    const auto ns = 4;
+    const auto nt = 8;
+    const double kappa =  0.25f / (4.0 * static_cast<double>(n));
+
+    const cpp_int theta = cpp_int(512) * ns * nt * n * Psize;
+    return countCore(program, ns, nt, theta, kappa);
 }
 
 double runDNNF(const std::string& path)
@@ -94,6 +103,7 @@ int main(int argc, char* argv[])
         }
 
         std::cout << "value: " << value << '\n';
+        std::cout << "error: " << std::abs(value - std::exp2(22))/ std::exp2(22);
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';
