@@ -306,6 +306,16 @@ std::vector<Monomial> makeDegreeOneSupport(const std::vector<VarId>& variables)
     return support;
 }
 
+MonomialSet makeDegreeOneSet(VarId firstVariable, std::size_t count)
+{
+    MonomialSet result;
+    for (std::size_t offset = 0; offset < count; ++offset) {
+        result.insert(Monomial{{
+            static_cast<VarId>(firstVariable + static_cast<VarId>(offset))}});
+    }
+    return result;
+}
+
 CountCoreState makeRegenerationState(const PlusTimesProgram& P, std::uint64_t seed)
 {
     CountCoreState st;
@@ -428,6 +438,75 @@ void testSparseExactSupportCanonicalization()
     const MonomialSet first = reduceExactSupportSparse(forward, 0.4, st, key);
     const MonomialSet second = reduceExactSupportSparse(shuffled, 0.4, st, key);
     assert(sameMonomialSet(first, second));
+}
+
+void testLazyProductSparseSampling()
+{
+    CountCoreState st;
+    st.runSeed = 123456789;
+    const SampleKey key{7, 11, SampleStage::MulFinal, 0};
+
+    const MonomialSet left = makeDegreeOneSet(0, 2);
+    const MonomialSet right = makeDegreeOneSet(2, 3);
+    const LazyProductSample full = reduceLazyProductSparse(left, right, 1.0, st, key);
+    assert(full.candidateCount == 6);
+    assert(full.materializedCount == 6);
+    assert(full.uniformDraws == 0);
+
+    MonomialSet eagerFull;
+    for (const Monomial& monomial : cross(left, right)) {
+        eagerFull.insert(monomial);
+    }
+    assert(sameMonomialSet(full.monomials, eagerFull));
+
+    const LazyProductSample empty = reduceLazyProductSparse(left, right, 0.0, st, key);
+    assert(empty.candidateCount == 6);
+    assert(empty.materializedCount == 0);
+    assert(empty.uniformDraws == 0);
+    assert(empty.monomials.size() == 0);
+
+    const MonomialSet deterministicLeft = makeDegreeOneSet(0, 32);
+    const MonomialSet deterministicRight = makeDegreeOneSet(32, 32);
+    const LazyProductSample first = reduceLazyProductSparse(
+        deterministicLeft,
+        deterministicRight,
+        0.2,
+        st,
+        key);
+    const LazyProductSample intervening = reduceLazyProductSparse(
+        deterministicLeft,
+        deterministicRight,
+        0.2,
+        st,
+        SampleKey{7, 12, SampleStage::MulFinal, 0});
+    const LazyProductSample repeated = reduceLazyProductSparse(
+        deterministicLeft,
+        deterministicRight,
+        0.2,
+        st,
+        key);
+    assert(sameMonomialSet(first.monomials, repeated.monomials));
+    assert(!sameMonomialSet(first.monomials, intervening.monomials));
+
+    const MonomialSet largeLeft = makeDegreeOneSet(0, 1000);
+    const MonomialSet largeRight = makeDegreeOneSet(1000, 1000);
+    const LazyProductSample sparse = reduceLazyProductSparse(
+        largeLeft,
+        largeRight,
+        0.00001,
+        st,
+        SampleKey{8, 0, SampleStage::MulFinal, 0});
+    assert(sparse.candidateCount == 1000000);
+    assert(sparse.materializedCount < 100);
+    assert(sparse.monomials.size() == sparse.materializedCount);
+    assert(sparse.uniformDraws == sparse.materializedCount ||
+           sparse.uniformDraws == sparse.materializedCount + 1);
+
+    assertThrowsOverflow([] {
+        checkedCartesianProductSize(
+            std::numeric_limits<std::size_t>::max(),
+            2);
+    });
 }
 
 void testGeometricSamplingDistributionAndSparseWork()
@@ -790,6 +869,7 @@ int main()
     testGeometricIndexEdgeCases();
     testGeometricIndexDeterminism();
     testSparseExactSupportCanonicalization();
+    testLazyProductSparseSampling();
     testGeometricSamplingDistributionAndSparseWork();
     testRoundDown();
     testCounterExactSmallPrograms();

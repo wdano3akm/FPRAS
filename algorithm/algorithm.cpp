@@ -722,6 +722,71 @@ MonomialSet reduceExactSupportSparse(
     return result;
 }
 
+std::size_t checkedCartesianProductSize(std::size_t leftSize, std::size_t rightSize)
+{
+    if (rightSize != 0 &&
+        leftSize > std::numeric_limits<std::size_t>::max() / rightSize) {
+        throw std::overflow_error("lazy Cartesian product size overflows size_t");
+    }
+    return leftSize * rightSize;
+}
+
+std::vector<Monomial> canonicalMonomials(const MonomialSet& monomials)
+{
+    std::vector<Monomial> result(monomials.begin(), monomials.end());
+    canonicalizeSupport(result);
+    return result;
+}
+
+Monomial multiplyMonomials(const Monomial& left, const Monomial& right)
+{
+    Monomial product;
+    product.vars.reserve(left.vars.size() + right.vars.size());
+    product.vars.insert(product.vars.end(), left.vars.begin(), left.vars.end());
+    product.vars.insert(product.vars.end(), right.vars.begin(), right.vars.end());
+    std::sort(product.vars.begin(), product.vars.end());
+    return product;
+}
+
+struct LazyProductSample {
+    MonomialSet monomials;
+    std::size_t candidateCount = 0;
+    std::size_t materializedCount = 0;
+    std::size_t uniformDraws = 0;
+};
+
+LazyProductSample reduceLazyProductSparse(
+    const MonomialSet& left,
+    const MonomialSet& right,
+    double probability,
+    const CountCoreState& st,
+    const SampleKey& key)
+{
+    const std::vector<Monomial> indexedLeft = canonicalMonomials(left);
+    const std::vector<Monomial> indexedRight = canonicalMonomials(right);
+
+    LazyProductSample result;
+    result.candidateCount = checkedCartesianProductSize(
+        indexedLeft.size(),
+        indexedRight.size());
+
+    GeometricIndexGenerator generator(
+        result.candidateCount,
+        probability,
+        st.runSeed,
+        key);
+    while (const std::optional<std::size_t> flatIndex = generator.next()) {
+        const std::size_t leftIndex = *flatIndex / indexedRight.size();
+        const std::size_t rightIndex = *flatIndex % indexedRight.size();
+        result.monomials.insert(multiplyMonomials(
+            indexedLeft[leftIndex],
+            indexedRight[rightIndex]));
+        ++result.materializedCount;
+    }
+    result.uniformDraws = generator.uniformDraws();
+    return result;
+}
+
 MonomialSet reduceDeterministic(
     const std::vector<Monomial>& monomials,
     double p,
@@ -1162,11 +1227,13 @@ const MonomialSet& generateSampleMemoized(
         const double denominator = st.p[left] * st.p[right];
         const double reduceProbability =
             denominator > 0.0 ? st.p[q] / denominator : 0.0;
-        return memo.store(q, r, reduceDeterministic(
-            cross(leftSample, rightSample),
+        LazyProductSample productSample = reduceLazyProductSparse(
+            leftSample,
+            rightSample,
             reduceProbability,
             st,
-            SampleKey{q, r, SampleStage::MulFinal, 0}));
+            SampleKey{q, r, SampleStage::MulFinal, 0});
+        return memo.store(q, r, std::move(productSample.monomials));
     }
 
     if (node.kind == PTKind::Add) {
