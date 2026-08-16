@@ -23,6 +23,41 @@ using boost::multiprecision::cpp_int;
 constexpr std::size_t supportThresholdFactor = 16;
 constexpr std::size_t minimumRandomizedDegree = 16;
 
+void outputRunInfo(
+    std::size_t n,
+    std::size_t programSize,
+    std::size_t theoreticalEnumerationCutoff,
+    std::size_t enumerationCutoff,
+    std::size_t ns,
+    std::size_t nt,
+    std::size_t q0Nodes,
+    std::size_t randomizedPlusNodes,
+    std::size_t randomizedTimesNodes,
+    double estimate,
+    std::chrono::duration<double> runtime,
+    std::optional<std::uint64_t> seed)
+{
+    std::cout << "n: " << n << '\n';
+    std::cout << "|P|: " << programSize << '\n';
+    std::cout << "theoretical enumeration cutoff: "
+              << theoreticalEnumerationCutoff << '\n';
+    std::cout << "empirical enumeration cutoff: " << enumerationCutoff << '\n';
+    std::cout << "ns: " << ns << '\n';
+    std::cout << "nt: " << nt << '\n';
+    std::cout << "Q0 nodes: " << q0Nodes << '\n';
+    std::cout << "number of randomized + nodes: " << randomizedPlusNodes << '\n';
+    std::cout << "number of randomized x nodes: " << randomizedTimesNodes << '\n';
+    std::cout << "estimate: " << estimate << '\n';
+    std::cout << "runtime: " << runtime.count() << "s\n";
+    std::cout << "seed: ";
+    if (seed.has_value()) {
+        std::cout << *seed;
+    } else {
+        std::cout << "not used";
+    }
+    std::cout << std::endl;
+}
+
 bool theoremAllowsRandomizedCounting(std::size_t degree)
 {
     return degree >= minimumRandomizedDegree;
@@ -1375,8 +1410,12 @@ double countCoreWithSupportThreshold(
     double kappa,
     std::size_t supportThreshold
 ) {
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point startedAt = Clock::now();
     const NodeId o = P.root;
     const std::size_t n = static_cast<std::size_t>(P.degree);
+    const std::size_t theoreticalEnumerationCutoff =
+        supportThresholdFor(n, P.nodes.size());
     const std::size_t m = checkedMultiply(ns, nt, "sample count overflows size_t");
     const SampleSizeThreshold sampleSizeThreshold(theta);
     const std::size_t enumerationThreshold =
@@ -1384,6 +1423,26 @@ double countCoreWithSupportThreshold(
             ? supportThreshold
             : supportThreshold + 1;
     const bool verbose = m >= 100;
+    std::size_t q0Nodes = 0;
+    std::size_t randomizedPlusNodes = 0;
+    std::size_t randomizedTimesNodes = 0;
+    std::optional<std::uint64_t> runSeed;
+    const auto completeRun = [&](double estimate) {
+        outputRunInfo(
+            n,
+            P.nodes.size(),
+            theoreticalEnumerationCutoff,
+            supportThreshold,
+            ns,
+            nt,
+            q0Nodes,
+            randomizedPlusNodes,
+            randomizedTimesNodes,
+            estimate,
+            Clock::now() - startedAt,
+            runSeed);
+        return estimate;
+    };
 
     if (verbose) {
         std::cerr << "countCore: checking root support up to "
@@ -1392,8 +1451,9 @@ double countCoreWithSupportThreshold(
     Support rootSupp = enumerateSupportBounded(P, o, enumerationThreshold);
 
     if (rootSupp.has_value()) {
+        ++q0Nodes;
         std::cout << "enumerating" << std::endl;
-        return static_cast<double>(rootSupp->size());
+        return completeRun(static_cast<double>(rootSupp->size()));
     }
     if (verbose) {
         std::cerr << "countCore: root support exceeds exact threshold; starting regenerated sampling"
@@ -1406,6 +1466,7 @@ double countCoreWithSupportThreshold(
     st.n = n;
     st.kappa = kappa;
     st.runSeed = chooseRunSeed();
+    runSeed = st.runSeed;
     st.p.resize(P.nodes.size());
     st.pReady.resize(P.nodes.size(), false);
     st.exactSupports.resize(P.nodes.size());
@@ -1431,6 +1492,7 @@ double countCoreWithSupportThreshold(
         auto supp = enumerateSupportBounded(P, q, enumerationThreshold);
 
         if (supp.has_value()) {
+            ++q0Nodes;
             canonicalizeSupport(*supp);
             st.p[q] = supp->empty() ? 0.0 : std::min(1.0, (16.0 * n) / supp->size());
             if (verbose) {
@@ -1445,7 +1507,7 @@ double countCoreWithSupportThreshold(
                 sampleSizeThreshold,
                 m);
             if (thetaDecision == ExactThetaDecision::Fail) {
-                return 0.0;
+                return completeRun(0.0);
             }
             needsFinalThetaPass = thetaDecision == ExactThetaDecision::CheckSamples;
         } else {
@@ -1454,9 +1516,11 @@ double countCoreWithSupportThreshold(
                           << nodeKindName(node) << " node" << std::endl;
             }
             if (isTimes(P.nodes[q])) {
+                ++randomizedTimesNodes;
                 estimateSampleTimes(P, q, st, n);
                 st.pReady[q] = true;
             } else if (isPlus(P.nodes[q])) {
+                ++randomizedPlusNodes;
                 const PlusEstimateResult plusResult = estimateSamplePlus(
                     P,
                     q,
@@ -1496,14 +1560,14 @@ double countCoreWithSupportThreshold(
             sampleMemo.beginSample(r);
             if (sampleSizeThreshold.reached(
                     generateSampleMemoized(P, q, r, st, sampleMemo).size())) {
-                return 0.0;
+                return completeRun(0.0);
             }
             progress.update(r + 1);
         }
         progress.finish();
     }
 
-    return st.p[o] > 0.0 ? (16.0 * n) / st.p[o] : 0.0;
+    return completeRun(st.p[o] > 0.0 ? (16.0 * n) / st.p[o] : 0.0);
 }
 
 double countCore(
