@@ -11,19 +11,28 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <exception>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace {
 
 constexpr double epsilon = 0.5;
 constexpr double delta = 0.25;
 constexpr int defaultCfgLength = 3;
+constexpr std::size_t N = 4;
 
-double runCFG(const std::string& path, int length)
+double runCFG(const std::string& path, int length, bool programSizeOnly)
 {
     const CFG cfg = parseCFG(path);
     const PlusTimesProgram program = compileCFGToPlusTimes(cfg, length);
+    std::cout << "|P|: " << program.nodes.size() << '\n';
+    if (programSizeOnly) {
+        return 0.0;
+    }
 
     const std::size_t Psize = program.nodes.size();
     const std::size_t n = static_cast<std::size_t>(program.degree);
@@ -35,11 +44,15 @@ double runCFG(const std::string& path, int length)
     return countCore(program, ns, nt, theta, kappa);
 }
 
-double runDNNF(const std::string& path)
+double runDNNF(const std::string& path, bool programSizeOnly)
 {
     const DNNF dnnf = parseDNNF(path);
     const DNNF smoothDnnf = smoothDNNF(dnnf);
     const PlusTimesProgram program = compileDNNFtoPlusTimes(smoothDnnf);
+    std::cout << "|P|: " << program.nodes.size() << '\n';
+    if (programSizeOnly) {
+        return 0.0;
+    }
     return counter(program, epsilon, delta);
 }
 
@@ -72,7 +85,8 @@ int parseCfgLength(const char* argument)
 
 void printUsage(const char* executable)
 {
-    std::cerr << "usage: " << executable << " <input.nnf|input.cfg> [cfg-length]\n"
+    std::cerr << "usage: " << executable << " [--program-size-only] <input.nnf|input.cfg> [cfg-length]\n"
+              << "       --program-size-only prints |P| and exits before counting\n"
               << "       cfg-length defaults to " << defaultCfgLength << '\n';
 }
 
@@ -80,30 +94,76 @@ void printUsage(const char* executable)
 
 int main(int argc, char* argv[])
 {
-    if (argc < 2 || argc > 3) {
+    const bool programSizeOnly = argc >= 2 && std::string(argv[1]) == "--program-size-only";
+    const int firstInputArgument = programSizeOnly ? 2 : 1;
+    if (argc < firstInputArgument + 1 || argc > firstInputArgument + 2) {
         printUsage(argv[0]);
         return 2;
     }
 
     try {
-        const std::string path(argv[1]);
+        const std::string path(argv[firstInputArgument]);
         const std::string extension = lowerExtension(path);
-        double value = 0.0;
+        std::vector<double> values(N);
+        std::exception_ptr workerError;
+        std::mutex workerErrorMutex;
+
+        const auto runTest = [&](std::size_t run) {
+            try {
+                if (extension == ".nnf") {
+                    values[run] = runDNNF(path, programSizeOnly);
+                } else {
+                    const int length = argc == firstInputArgument + 2
+                        ? parseCfgLength(argv[firstInputArgument + 1])
+                        : defaultCfgLength;
+                    values[run] = runCFG(path, length, programSizeOnly);
+                }
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(workerErrorMutex);
+                if (!workerError) {
+                    workerError = std::current_exception();
+                }
+            }
+        };
 
         if (extension == ".nnf") {
-            if (argc != 2) {
+            if (argc != firstInputArgument + 1) {
                 throw std::invalid_argument("a DNNF input does not take a CFG length");
             }
-            value = runDNNF(path);
         } else if (extension == ".cfg") {
-            const int length = argc == 3 ? parseCfgLength(argv[2]) : defaultCfgLength;
-            value = runCFG(path, length);
+            if (argc == firstInputArgument + 2) {
+                parseCfgLength(argv[firstInputArgument + 1]);
+            }
         } else {
             throw std::invalid_argument("input file must have a .nnf or .cfg extension");
         }
 
-        std::cout << "value: " << value << '\n';
-        std::cout << "error: " << std::abs(value - std::exp2(22))/ std::exp2(22);
+        if (programSizeOnly) {
+            runTest(0);
+            if (workerError) {
+                std::rethrow_exception(workerError);
+            }
+            return 0;
+        }
+
+        std::vector<std::thread> workers;
+        workers.reserve(N);
+        for (std::size_t run = 0; run < N; ++run) {
+            workers.emplace_back(runTest, run);
+        }
+        for (std::thread& worker : workers) {
+            worker.join();
+        }
+        if (workerError) {
+            std::rethrow_exception(workerError);
+        }
+
+        for (std::size_t run = 0; run < N; ++run) {
+            std::cout << "value [" << run << "]: " << values[run] << '\n';
+            std::cout << "error [" << run << "]: "
+                      << std::abs(values[run] - std::exp2(22)) / std::exp2(22)
+                      << '\n';
+        }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';

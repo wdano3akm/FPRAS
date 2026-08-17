@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <limits>
+#include <mutex>
 #include <random>
 #include <stdexcept>
 #include <unordered_map>
@@ -37,6 +38,8 @@ void outputRunInfo(
     std::chrono::duration<double> runtime,
     std::optional<std::uint64_t> seed)
 {
+    static std::mutex outputMutex;
+    std::lock_guard<std::mutex> lock(outputMutex);
     std::cout << "n: " << n << '\n';
     std::cout << "|P|: " << programSize << '\n';
     std::cout << "theoretical enumeration cutoff: "

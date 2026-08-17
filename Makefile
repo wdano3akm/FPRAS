@@ -1,5 +1,5 @@
 CXX := g++
-CXXFLAGS := -std=c++17 -Wall -Wextra -pedantic -I.
+CXXFLAGS := -std=c++17 -Wall -Wextra -pedantic -pthread -I.
 OPT_LEVEL ?= 3
 BUILD_DIR := build
 
