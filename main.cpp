@@ -13,6 +13,7 @@
 #include <limits>
 #include <exception>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -25,7 +26,11 @@ constexpr double delta = 0.25;
 constexpr int defaultCfgLength = 3;
 constexpr std::size_t N = 4;
 
-double runCFG(const std::string& path, int length, bool programSizeOnly)
+double runCFG(
+    const std::string& path,
+    int length,
+    bool programSizeOnly,
+    bool checkEnumerationCutoff)
 {
     const CFG cfg = parseCFG(path);
     const PlusTimesProgram program = compileCFGToPlusTimes(cfg, length);
@@ -36,6 +41,33 @@ double runCFG(const std::string& path, int length, bool programSizeOnly)
 
     const std::size_t Psize = program.nodes.size();
     const std::size_t n = static_cast<std::size_t>(program.degree);
+    if (checkEnumerationCutoff) {
+        if (Psize != 0 && Psize > std::numeric_limits<std::size_t>::max() / Psize) {
+            throw std::overflow_error("enumeration cutoff overflows size_t");
+        }
+        const std::size_t PsizeSquared = Psize * Psize;
+        if (n != 0 && PsizeSquared > std::numeric_limits<std::size_t>::max() / n) {
+            throw std::overflow_error("enumeration cutoff overflows size_t");
+        }
+        const std::size_t cutoff = n * PsizeSquared;
+        if (cutoff == std::numeric_limits<std::size_t>::max()) {
+            throw std::overflow_error("enumeration cutoff is too large to check");
+        }
+
+        // Enumerate only until the cutoff is surpassed.  This deliberately
+        // returns before countCore, so no randomized counting can begin.
+        const std::optional<std::size_t> rootSupport =
+            supportSizeBounded(program, program.root, cutoff + 1);
+        std::cout << "enumeration cutoff: " << cutoff << '\n';
+        if (rootSupport.has_value()) {
+            std::cout << "root support: " << *rootSupport << '\n';
+            std::cout << "root support exceeds enumeration cutoff: no\n";
+        } else {
+            std::cout << "root support exceeds enumeration cutoff: yes\n";
+        }
+        return 0.0;
+    }
+
     const auto ns = 4;
     const auto nt = 8;
     const double kappa =  0.25f / (4.0 * static_cast<double>(n));
@@ -85,8 +117,10 @@ int parseCfgLength(const char* argument)
 
 void printUsage(const char* executable)
 {
-    std::cerr << "usage: " << executable << " [--program-size-only] <input.nnf|input.cfg> [cfg-length]\n"
+    std::cerr << "usage: " << executable
+              << " [--program-size-only|--check-enumeration-cutoff] <input.nnf|input.cfg> [cfg-length]\n"
               << "       --program-size-only prints |P| and exits before counting\n"
+              << "       --check-enumeration-cutoff checks whether CFG root support exceeds n * |P|^2\n"
               << "       cfg-length defaults to " << defaultCfgLength << '\n';
 }
 
@@ -95,7 +129,9 @@ void printUsage(const char* executable)
 int main(int argc, char* argv[])
 {
     const bool programSizeOnly = argc >= 2 && std::string(argv[1]) == "--program-size-only";
-    const int firstInputArgument = programSizeOnly ? 2 : 1;
+    const bool checkEnumerationCutoff =
+        argc >= 2 && std::string(argv[1]) == "--check-enumeration-cutoff";
+    const int firstInputArgument = (programSizeOnly || checkEnumerationCutoff) ? 2 : 1;
     if (argc < firstInputArgument + 1 || argc > firstInputArgument + 2) {
         printUsage(argv[0]);
         return 2;
@@ -116,7 +152,7 @@ int main(int argc, char* argv[])
                     const int length = argc == firstInputArgument + 2
                         ? parseCfgLength(argv[firstInputArgument + 1])
                         : defaultCfgLength;
-                    values[run] = runCFG(path, length, programSizeOnly);
+                    values[run] = runCFG(path, length, programSizeOnly, checkEnumerationCutoff);
                 }
             } catch (...) {
                 std::lock_guard<std::mutex> lock(workerErrorMutex);
@@ -130,6 +166,9 @@ int main(int argc, char* argv[])
             if (argc != firstInputArgument + 1) {
                 throw std::invalid_argument("a DNNF input does not take a CFG length");
             }
+            if (checkEnumerationCutoff) {
+                throw std::invalid_argument("--check-enumeration-cutoff only supports CFG input");
+            }
         } else if (extension == ".cfg") {
             if (argc == firstInputArgument + 2) {
                 parseCfgLength(argv[firstInputArgument + 1]);
@@ -138,7 +177,7 @@ int main(int argc, char* argv[])
             throw std::invalid_argument("input file must have a .nnf or .cfg extension");
         }
 
-        if (programSizeOnly) {
+        if (programSizeOnly || checkEnumerationCutoff) {
             runTest(0);
             if (workerError) {
                 std::rethrow_exception(workerError);
